@@ -20,7 +20,9 @@ export default function CardGrid({ tiles, selectedIndex, onTileClick, useFaceCar
         if (tile.alive) {
           if (useFaceCards && tile.value.d === 1n) {
             const intVal = Number(tile.value.n);
-            if (intVal === 11) {
+            if (intVal === 1) {
+              display = "A";
+            } else if (intVal === 11) {
               display = "J";
             } else if (intVal === 12) {
               display = "Q";

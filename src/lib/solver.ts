@@ -343,6 +343,43 @@ export function hasSolution(numbers: number[], goal: number): boolean {
   return searchEarly(items, target);
 }
 
+function normalizeOpsToAscii(expr: string): string {
+  return expr.replace(/[−×÷]/g, (c) => ({ "−": "-", "×": "*", "÷": "/" }[c]!));
+}
+
+function collectNums(ast: AST, out: number[]): void {
+  if (ast.type === "num") {
+    out.push(parseInt(ast.val, 10));
+    return;
+  }
+  collectNums(ast.left, out);
+  collectNums(ast.right, out);
+}
+
+/** Validate that `expr` uses exactly `cards` once each and equals `goal`. */
+export function validateFinalExpr(expr: string, cards: number[], goal: number): boolean {
+  try {
+    const s = normalizeOpsToAscii(expr);
+    const ast = parseExpr(s);
+    if (ast === null) return false;
+    const value = evalAst(ast);
+    if (value === null) return false;
+
+    const used: number[] = [];
+    collectNums(ast, used);
+    if (used.length !== cards.length) return false;
+    used.sort((a, b) => a - b);
+    const want = [...cards].sort((a, b) => a - b);
+    for (let i = 0; i < want.length; i++) {
+      if (used[i] !== want[i]) return false;
+    }
+
+    return eq(value, rat(goal));
+  } catch {
+    return false;
+  }
+}
+
 function searchEarly(items: Item[], target: Rational): boolean {
   if (items.length === 1) return eq(items[0].value, target);
 

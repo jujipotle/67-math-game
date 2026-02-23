@@ -43,7 +43,7 @@ export type SkippedRecord = {
 };
 
 export type Mode = "practice" | "sprint";
-export type Screen = "home" | "play" | "review" | "summary";
+export type Screen = "home" | "play" | "review" | "summary" | "leaderboard";
 
 export type SessionState = {
   mode: Mode;

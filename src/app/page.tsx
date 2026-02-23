@@ -22,6 +22,7 @@ import CardGrid from "@/components/CardGrid";
 import OpRow from "@/components/OpRow";
 import ReviewPanel from "@/components/ReviewPanel";
 import SummaryView from "@/components/SummaryView";
+import LeaderboardView from "@/components/LeaderboardView";
 
 const SPRINT_DURATION_MS = 5 * 60 * 1000;
 
@@ -84,6 +85,8 @@ export default function Home() {
   const [selectedTile, setSelectedTile] = useState<number | null>(null);
   const [selectedOp, setSelectedOp] = useState<Op | null>(null);
   const [useFaceCards, setUseFaceCards] = useState(false);
+  const [sprintSessionId, setSprintSessionId] = useState<string | null>(null);
+  const [sprintPuzzleIdx, setSprintPuzzleIdx] = useState<number | null>(null);
   const [playElapsedMs, setPlayElapsedMs] = useState(0);
   const [sprintRemainingMs, setSprintRemainingMs] = useState(SPRINT_DURATION_MS);
   const [timerRunning, setTimerRunning] = useState(false);
@@ -292,6 +295,71 @@ export default function Home() {
       sessionIndexRef.current = 1;
       setPlayElapsedMs(0);
       setSprintRemainingMs(SPRINT_DURATION_MS);
+      setSprintSessionId(null);
+      setSprintPuzzleIdx(null);
+
+      if (m === "sprint") {
+        setGenerating(true);
+        setTimerRunning(false);
+        (async () => {
+          try {
+            const res = await fetch("/api/sprint/start", { method: "POST" });
+            const data = (await res.json()) as {
+              sessionId?: string;
+              endsAt?: number;
+              puzzle?: Puzzle;
+              idx?: number;
+              error?: string;
+            };
+            if (!res.ok || !data.sessionId || !data.puzzle || !data.endsAt || !data.idx) {
+              throw new Error(data.error || "Failed to start sprint");
+            }
+
+            setSprintSessionId(data.sessionId);
+            setSprintPuzzleIdx(data.idx);
+            setSprintRemainingMs(Math.max(0, data.endsAt - Date.now()));
+
+            const b = makeBoardFromPuzzle(data.puzzle);
+            setPuzzle(data.puzzle);
+            setBoard(b);
+            setCurrentSolutions([]);
+            setSolutionsReady(false);
+            setPendingSolved(null);
+            setPendingSkip(false);
+            setHistoryStack([]);
+            setStepStack([]);
+            setSelectedTile(null);
+            setSelectedOp(null);
+            setGenerating(false);
+            setTimerRunning(true);
+
+            // Enumerate all solutions in the background for review.
+            const id = ++solveAbortRef.current;
+            if (workerRef.current) {
+              workerBusyRef.current = true;
+              workerRef.current.postMessage({
+                type: "solveAll",
+                id,
+                cards: data.puzzle.cards,
+                goal: data.puzzle.goal,
+              });
+            } else {
+              setTimeout(() => {
+                if (solveAbortRef.current !== id) return;
+                const solutions = solve(data.puzzle!.cards, data.puzzle!.goal);
+                if (solveAbortRef.current !== id) return;
+                setCurrentSolutions(solutions);
+                setSolutionsReady(true);
+              }, 0);
+            }
+          } catch {
+            setGenerating(false);
+            setScreen("home");
+          }
+        })();
+        return;
+      }
+
       startNewPuzzle();
     },
     [startNewPuzzle]
@@ -426,6 +494,18 @@ export default function Home() {
           });
         }
         setScreen("review");
+        if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
+          fetch("/api/sprint/mark", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sessionId: sprintSessionId,
+              idx: sprintPuzzleIdx,
+              outcome: "solved",
+              finalExpr: resultExpr,
+            }),
+          }).catch(() => {});
+        }
       }
     }
   };
@@ -456,6 +536,69 @@ export default function Home() {
 
   const handleContinue = () => {
     setScreen("play");
+    if (mode === "sprint" && sprintSessionId) {
+      setGenerating(true);
+      setTimerRunning(false);
+      (async () => {
+        try {
+          const res = await fetch("/api/sprint/puzzle", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId: sprintSessionId }),
+          });
+          const data = (await res.json()) as {
+            idx?: number;
+            endsAt?: number;
+            puzzle?: Puzzle;
+            error?: string;
+          };
+          if (!res.ok || !data.puzzle || !data.endsAt || !data.idx) {
+            // Session ended or request failed; go to summary.
+            handleQuit();
+            return;
+          }
+
+          setSprintPuzzleIdx(data.idx);
+          setSprintRemainingMs(Math.max(0, data.endsAt - Date.now()));
+
+          const b = makeBoardFromPuzzle(data.puzzle);
+          setPuzzle(data.puzzle);
+          setBoard(b);
+          setCurrentSolutions([]);
+          setSolutionsReady(false);
+          setPendingSolved(null);
+          setPendingSkip(false);
+          setHistoryStack([]);
+          setStepStack([]);
+          setSelectedTile(null);
+          setSelectedOp(null);
+          setGenerating(false);
+          setTimerRunning(true);
+
+          const id = ++solveAbortRef.current;
+          if (workerRef.current) {
+            workerBusyRef.current = true;
+            workerRef.current.postMessage({
+              type: "solveAll",
+              id,
+              cards: data.puzzle.cards,
+              goal: data.puzzle.goal,
+            });
+          } else {
+            setTimeout(() => {
+              if (solveAbortRef.current !== id) return;
+              const solutions = solve(data.puzzle!.cards, data.puzzle!.goal);
+              if (solveAbortRef.current !== id) return;
+              setCurrentSolutions(solutions);
+              setSolutionsReady(true);
+            }, 0);
+          }
+        } catch {
+          handleQuit();
+        }
+      })();
+      return;
+    }
     startNewPuzzle();
   };
 
@@ -465,7 +608,22 @@ export default function Home() {
     if (now - skipDebounceRef.current < 800) return;
     skipDebounceRef.current = now;
     setSkippedCount((c) => c + 1);
-    if (mode === "sprint") {
+    if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
+      fetch("/api/sprint/mark", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: sprintSessionId,
+          idx: sprintPuzzleIdx,
+          outcome: "skipped",
+        }),
+      })
+        .then(async (r) => {
+          const data = (await r.json().catch(() => null)) as { endsAt?: number } | null;
+          if (data?.endsAt) setSprintRemainingMs(Math.max(0, data.endsAt - Date.now()));
+        })
+        .catch(() => {});
+    } else if (mode === "sprint") {
       setSprintRemainingMs((prev) => Math.max(0, prev - 20000));
     }
     setTimerRunning(false);
@@ -477,7 +635,7 @@ export default function Home() {
       setPendingSkip(true);
     }
     setScreen("review");
-  }, [puzzle, board, mode, solutionsReady, currentSolutions]);
+  }, [puzzle, board, mode, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx]);
 
   const handleHome = () => {
     setScreen("home");
@@ -502,7 +660,7 @@ export default function Home() {
           <strong>Target:</strong> Random number from 1–200.
         </p>
         <p className="text-neutral-500 text-sm text-center max-w-sm mb-2">
-          <strong>Cards:</strong> Numbered 1–13.
+          <strong>Cards:</strong> Numbered 1–13 (optionally shown as A, 2–10, J, Q, K).
         </p>
         <p className="text-neutral-500 text-sm text-center max-w-sm mb-4">
           <strong>Number of cards:</strong> 4 if &lt; 67, 5 if &lt; 67 × 2, 6 otherwise.
@@ -514,7 +672,7 @@ export default function Home() {
             onChange={(e) => setUseFaceCards(e.target.checked)}
             className="h-4 w-4 rounded border-neutral-300 text-neutral-900"
           />
-          <span>Show 11–13 as J/Q/K</span>
+          <span>Show A, J, Q, K for 1, 11, 12, 13</span>
         </label>
         <div className="flex flex-col gap-3 w-full max-w-xs">
           <button
@@ -529,9 +687,20 @@ export default function Home() {
           >
             5-Minute Sprint
           </button>
+          <button
+            onClick={() => setScreen("leaderboard")}
+            className="h-12 border-2 border-neutral-300 text-neutral-700 rounded-xl font-medium active:bg-neutral-100 transition-colors"
+          >
+            Leaderboard
+          </button>
         </div>
       </div>
     );
+  }
+
+  // LEADERBOARD
+  if (screen === "leaderboard") {
+    return <LeaderboardView onBack={handleHome} />;
   }
 
   // SUMMARY
@@ -544,6 +713,7 @@ export default function Home() {
         solved={solved}
         skipped={skipped}
         useFaceCards={useFaceCards}
+        leaderboardSessionId={mode === "sprint" ? sprintSessionId : null}
         solvedCount={solvedCount}
         skippedCount={skippedCount}
         totalTimeMs={totalTime}

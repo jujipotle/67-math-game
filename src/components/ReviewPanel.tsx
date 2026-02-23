@@ -44,6 +44,7 @@ export default function ReviewPanel({
 
   const formatCard = (n: number): string => {
     if (!useFaceCards) return n.toString();
+    if (n === 1) return "A";
     if (n === 11) return "J";
     if (n === 12) return "Q";
     if (n === 13) return "K";

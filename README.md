@@ -1,5 +1,19 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Leaderboard
+
+- **Persistence**:
+  - **Vercel / production**: Set `DATABASE_URL` or `POSTGRES_URL` (e.g. from [Neon](https://neon.tech)) in your environment. The app uses Postgres and the leaderboard persists.
+  - **Local**: If neither is set, the leaderboard uses SQLite in `data/leaderboard.db` and persists across restarts.
+- **Blocklist**: Names are checked before submission. **No blocklist words are stored in the repo.** Configure terms via the **`LEADERBOARD_BLOCKED_TERMS`** environment variable (comma- or newline-separated, e.g. in Vercel: Project → Settings → Environment Variables). Matching is case-insensitive and normalizes common substitutions (0→o, 1→i, etc.). If unset, no blocking is applied (fine for local dev; set it in production).
+- **Removing a bad entry**: Set `LEADERBOARD_ADMIN_KEY` in your environment (e.g. a long random string). Then you can delete an entry by ID:
+  ```bash
+  curl -X DELETE http://localhost:3000/api/leaderboard \
+    -H "Content-Type: application/json" \
+    -d '{"adminKey":"YOUR_KEY","id":3}'
+  ```
+  Entry IDs are in the API response when you `GET /api/leaderboard` (each entry has an `id` field).
+
 ## Getting Started
 
 First, run the development server:
