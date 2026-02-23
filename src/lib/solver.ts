@@ -15,18 +15,6 @@ const OP_SYMBOLS: Record<Op, string> = {
   "/": "÷",
 };
 
-/** Canonical key for deduplication. Prefer most concise among equivalents. */
-function canonicalKey(expr: string): string {
-  try {
-    const s = expr.replace(/[−×÷]/g, (c) => ({ "−": "-", "×": "*", "÷": "/" }[c]!));
-    const parsed = parseExpr(s);
-    if (parsed === null) return expr;
-    return canonicalize(normalize(parsed), true);
-  } catch {
-    return expr;
-  }
-}
-
 type AST =
   | { type: "num"; val: string }
   | { type: "bin"; op: Op; left: AST; right: AST };
@@ -250,16 +238,30 @@ export function solve(numbers: number[], goal: number): string[] {
   return Array.from(seen.values());
 }
 
+/** Prefer displays per theory: fewer subtract-of-parens, ×1 over ÷1 (rule 6), then shorter. */
+function preferDisplay(candidate: string, existing: string): boolean {
+  const subParen = (x: string) => (x.match(/[−\-]\s*\(/g) ?? []).length;
+  const divBy1 = (x: string) => (x.match(/[÷\/]\s*1\b/g) ?? []).length;
+  if (subParen(candidate) < subParen(existing)) return true;
+  if (subParen(candidate) > subParen(existing)) return false;
+  if (divBy1(candidate) < divBy1(existing)) return true;
+  if (divBy1(candidate) > divBy1(existing)) return false;
+  return candidate.length <= existing.length;
+}
+
 function search(items: Item[], target: Rational, seen: Map<string, string>): void {
   if (items.length === 1) {
     if (eq(items[0].value, target)) {
       const expr = items[0].expr;
-      const key = canonicalKey(expr);
+      const s = expr.replace(/[−×÷]/g, (c) => ({ "−": "-", "×": "*", "÷": "/" }[c]!));
+      const parsed = parseExpr(s);
+      if (parsed === null) return;
+      const normalized = normalize(parsed);
+      const key = canonicalize(normalized, true);
       const display = minimizeParens(expr);
       const existing = seen.get(key);
-      if (!existing || display.length < existing.length || (display.length === existing.length && display < existing)) {
-        seen.set(key, display);
-      }
+      if (existing && !preferDisplay(display, existing)) return;
+      seen.set(key, display);
     }
     return;
   }
