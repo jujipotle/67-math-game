@@ -23,19 +23,27 @@ for (let rank = 1; rank <= 13; rank++) {
   }
 }
 
+const MAX_SHUFFLE_ATTEMPTS_PER_GOAL = 500;
+const FALLBACK: Puzzle = { goal: 24, cards: [1, 2, 3, 4], n: 4 };
+
+/**
+ * Pick a random goal (1–200), then keep drawing card sets until one is solvable.
+ * If no solvable set is found after many shuffles for that goal, pick a new goal and retry.
+ */
 export function generatePuzzle(): Puzzle {
-  const goal = Math.floor(Math.random() * 200) + 1;
-  const n = cardCount(goal);
-  const MAX_CARD_ATTEMPTS = 500;
+  for (let goalAttempt = 0; goalAttempt < 10; goalAttempt++) {
+    const goal = Math.floor(Math.random() * 200) + 1;
+    const n = cardCount(goal);
 
-  for (let attempt = 0; attempt < MAX_CARD_ATTEMPTS; attempt++) {
-    const shuffled = shuffle(DECK);
-    const cards = shuffled.slice(0, n);
+    for (let shuffleAttempt = 0; shuffleAttempt < MAX_SHUFFLE_ATTEMPTS_PER_GOAL; shuffleAttempt++) {
+      const shuffled = shuffle(DECK);
+      const cards = shuffled.slice(0, n);
 
-    if (hasSolution(cards, goal)) {
-      return { goal, cards, n };
+      if (hasSolution(cards, goal)) {
+        return { goal, cards, n };
+      }
     }
   }
 
-  return { goal: 24, cards: [1, 2, 3, 4], n: 4 };
+  return FALLBACK;
 }

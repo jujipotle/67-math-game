@@ -13,7 +13,7 @@ import {
   Puzzle,
 } from "@/lib/types";
 import { rat, applyOp, eq, ratToString } from "@/lib/rational";
-import { solve, hasSolution } from "@/lib/solver";
+import { solve } from "@/lib/solver";
 import { generatePuzzle } from "@/lib/generator";
 import { saveSession } from "@/lib/storage";
 import TopBar from "@/components/TopBar";
@@ -103,11 +103,14 @@ export default function Home() {
 
   const lastTickRef = useRef<number>(0);
   const solveAbortRef = useRef(0);
-  const nextPuzzleRef = useRef<Puzzle | null>(null);
+  const puzzleQueueRef = useRef<Puzzle[]>([]);
+  const queueGenerationInFlightRef = useRef(false);
   const workerRef = useRef<Worker | null>(null);
   const workerBusyRef = useRef(false);
   const skipDebounceRef = useRef(0);
   const sessionIndexRef = useRef(1);
+
+  const QUEUE_TARGET = 2;
 
   useEffect(() => {
     if (!timerRunning) return;
@@ -135,6 +138,32 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [timerRunning, mode]);
 
+  const refillPuzzleQueueRef = useRef<() => void>(() => {});
+
+  const refillPuzzleQueue = useCallback(() => {
+    if (puzzleQueueRef.current.length >= QUEUE_TARGET) return;
+    if (queueGenerationInFlightRef.current) return;
+
+    const addAndRefill = (p: Puzzle) => {
+      if (puzzleQueueRef.current.length >= QUEUE_TARGET) return;
+      puzzleQueueRef.current.push(p);
+      queueGenerationInFlightRef.current = false;
+      refillPuzzleQueueRef.current();
+    };
+
+    queueGenerationInFlightRef.current = true;
+    if (workerRef.current) {
+      workerRef.current.postMessage({ type: "preGenerate" });
+      return;
+    }
+    setTimeout(() => {
+      const p = generatePuzzle();
+      addAndRefill(p);
+    }, 0);
+  }, []);
+
+  refillPuzzleQueueRef.current = refillPuzzleQueue;
+
   useEffect(() => {
     try {
       workerRef.current = new Worker(new URL("../workers/puzzle.worker.ts", import.meta.url));
@@ -144,11 +173,15 @@ export default function Home() {
           | { kind: "solutions"; id: number; solutions: string[] }
         >
       ) => {
-        workerBusyRef.current = false;
         const msg = e.data;
         if (msg.kind === "puzzle") {
-          nextPuzzleRef.current = msg.puzzle;
+          if (puzzleQueueRef.current.length < QUEUE_TARGET) {
+            puzzleQueueRef.current.push(msg.puzzle);
+          }
+          queueGenerationInFlightRef.current = false;
+          refillPuzzleQueueRef.current();
         } else if (msg.kind === "solutions") {
+          workerBusyRef.current = false;
           if (msg.id !== solveAbortRef.current) return;
           setCurrentSolutions(msg.solutions);
           setSolutionsReady(true);
@@ -156,6 +189,7 @@ export default function Home() {
       };
       workerRef.current.onerror = () => {
         workerBusyRef.current = false;
+        queueGenerationInFlightRef.current = false;
         workerRef.current = null;
       };
     } catch {
@@ -164,32 +198,9 @@ export default function Home() {
     return () => workerRef.current?.terminate();
   }, []);
 
-  const preGenerateNextPuzzle = useCallback(() => {
-    if (workerBusyRef.current) return;
-    if (workerRef.current) {
-      workerBusyRef.current = true;
-      workerRef.current.postMessage({ type: "preGenerate" });
-    } else {
-      setTimeout(() => {
-        // Fallback: generate puzzles on the main thread, but only
-        // check for the existence of *any* solution before accepting.
-        // Full solution enumeration happens later.
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const p = generatePuzzle();
-          if (hasSolution(p.cards, p.goal)) {
-            nextPuzzleRef.current = p;
-            break;
-          }
-        }
-      }, 0);
-    }
-  }, []);
-
   const startNewPuzzle = useCallback(() => {
-    const cached = nextPuzzleRef.current;
+    const cached = puzzleQueueRef.current.shift();
     if (cached) {
-      nextPuzzleRef.current = null;
       const puzzleForPlay = cached;
       const b = makeBoardFromPuzzle(puzzleForPlay);
       setPuzzle(puzzleForPlay);
@@ -204,7 +215,7 @@ export default function Home() {
       setSelectedOp(null);
       setGenerating(false);
       setTimerRunning(true);
-      preGenerateNextPuzzle();
+      refillPuzzleQueue();
 
       // Kick off full solution enumeration in the background.
       const id = ++solveAbortRef.current;
@@ -231,15 +242,7 @@ export default function Home() {
     setGenerating(true);
     const puzzleId = ++solveAbortRef.current;
     setTimeout(() => {
-      // Find a solvable puzzle (at least one solution).
-      // This intentionally runs on the main thread only when no worker/cached
-      // puzzle is available, so you see a "Generating next problem" screen.
-      // eslint-disable-next-line no-constant-condition
-      let p: Puzzle;
-      while (true) {
-        p = generatePuzzle();
-        if (hasSolution(p.cards, p.goal)) break;
-      }
+      const p = generatePuzzle();
       if (solveAbortRef.current !== puzzleId) return;
       const b = makeBoardFromPuzzle(p);
       setPuzzle(p);
@@ -274,15 +277,13 @@ export default function Home() {
           setSolutionsReady(true);
         }, 0);
       }
-      preGenerateNextPuzzle();
+      refillPuzzleQueue();
     }, 0);
-  }, [preGenerateNextPuzzle]);
+  }, [refillPuzzleQueue]);
 
   useEffect(() => {
-    if (screen === "home" || screen === "summary") {
-      preGenerateNextPuzzle();
-    }
-  }, [screen, preGenerateNextPuzzle]);
+    refillPuzzleQueue();
+  }, [screen, refillPuzzleQueue]);
 
   const startSession = useCallback(
     (m: Mode) => {
@@ -307,20 +308,34 @@ export default function Home() {
             const data = (await res.json()) as {
               sessionId?: string;
               endsAt?: number;
-              puzzle?: Puzzle;
-              idx?: number;
               error?: string;
             };
-            if (!res.ok || !data.sessionId || !data.puzzle || !data.endsAt || !data.idx) {
+            if (!res.ok || !data.sessionId || data.endsAt == null) {
               throw new Error(data.error || "Failed to start sprint");
             }
 
-            setSprintSessionId(data.sessionId);
-            setSprintPuzzleIdx(data.idx);
-            setSprintRemainingMs(Math.max(0, data.endsAt - Date.now()));
+            let puzzleForPlay: Puzzle = puzzleQueueRef.current.shift()!;
+            if (!puzzleForPlay) {
+              puzzleForPlay = generatePuzzle();
+            }
 
-            const b = makeBoardFromPuzzle(data.puzzle);
-            setPuzzle(data.puzzle);
+            const registerRes = await fetch("/api/sprint/register", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                sessionId: data.sessionId,
+                idx: 1,
+                goal: puzzleForPlay.goal,
+                cards: puzzleForPlay.cards,
+              }),
+            });
+            if (!registerRes.ok) throw new Error("Failed to register puzzle");
+
+            setSprintSessionId(data.sessionId);
+            setSprintPuzzleIdx(1);
+            setSprintRemainingMs(Math.max(0, data.endsAt - Date.now()));
+            const b = makeBoardFromPuzzle(puzzleForPlay);
+            setPuzzle(puzzleForPlay);
             setBoard(b);
             setCurrentSolutions([]);
             setSolutionsReady(false);
@@ -332,21 +347,21 @@ export default function Home() {
             setSelectedOp(null);
             setGenerating(false);
             setTimerRunning(true);
+            refillPuzzleQueue();
 
-            // Enumerate all solutions in the background for review.
             const id = ++solveAbortRef.current;
             if (workerRef.current) {
               workerBusyRef.current = true;
               workerRef.current.postMessage({
                 type: "solveAll",
                 id,
-                cards: data.puzzle.cards,
-                goal: data.puzzle.goal,
+                cards: puzzleForPlay.cards,
+                goal: puzzleForPlay.goal,
               });
             } else {
               setTimeout(() => {
                 if (solveAbortRef.current !== id) return;
-                const solutions = solve(data.puzzle!.cards, data.puzzle!.goal);
+                const solutions = solve(puzzleForPlay.cards, puzzleForPlay.goal);
                 if (solveAbortRef.current !== id) return;
                 setCurrentSolutions(solutions);
                 setSolutionsReady(true);
@@ -379,11 +394,35 @@ export default function Home() {
     });
   }, [mode, playElapsedMs, sprintRemainingMs, solved]);
 
+  const handleTimeUp = useCallback(() => {
+    setTimerRunning(false);
+    if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
+      fetch("/api/sprint/mark", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: sprintSessionId,
+          idx: sprintPuzzleIdx,
+          outcome: "skipped",
+        }),
+      }).catch(() => {});
+    }
+    setSkippedCount((c) => c + 1);
+    setStepStack([]);
+    if (solutionsReady && puzzle) {
+      const idx = sessionIndexRef.current++;
+      setSkipped((prev) => [...prev, { puzzle, solutions: currentSolutions, sessionIndex: idx }]);
+    } else {
+      setPendingSkip(true);
+    }
+    setScreen("review");
+  }, [mode, puzzle, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx]);
+
   useEffect(() => {
     if (mode === "sprint" && sprintRemainingMs <= 0 && screen === "play") {
-      handleQuit();
+      handleTimeUp();
     }
-  }, [sprintRemainingMs, screen, mode, handleQuit]);
+  }, [sprintRemainingMs, screen, mode, handleTimeUp]);
 
   useEffect(() => {
     if (!solutionsReady) return;
@@ -536,33 +575,33 @@ export default function Home() {
 
   const handleContinue = () => {
     setScreen("play");
-    if (mode === "sprint" && sprintSessionId) {
+    if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx != null) {
       setGenerating(true);
       setTimerRunning(false);
+      const nextIdx = sprintPuzzleIdx + 1;
       (async () => {
         try {
-          const res = await fetch("/api/sprint/puzzle", {
+          let puzzleForPlay: Puzzle | undefined = puzzleQueueRef.current.shift();
+          if (!puzzleForPlay) puzzleForPlay = generatePuzzle();
+
+          const registerRes = await fetch("/api/sprint/register", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId: sprintSessionId }),
+            body: JSON.stringify({
+              sessionId: sprintSessionId,
+              idx: nextIdx,
+              goal: puzzleForPlay.goal,
+              cards: puzzleForPlay.cards,
+            }),
           });
-          const data = (await res.json()) as {
-            idx?: number;
-            endsAt?: number;
-            puzzle?: Puzzle;
-            error?: string;
-          };
-          if (!res.ok || !data.puzzle || !data.endsAt || !data.idx) {
-            // Session ended or request failed; go to summary.
+          if (!registerRes.ok) {
             handleQuit();
             return;
           }
 
-          setSprintPuzzleIdx(data.idx);
-          setSprintRemainingMs(Math.max(0, data.endsAt - Date.now()));
-
-          const b = makeBoardFromPuzzle(data.puzzle);
-          setPuzzle(data.puzzle);
+          setSprintPuzzleIdx(nextIdx);
+          const b = makeBoardFromPuzzle(puzzleForPlay);
+          setPuzzle(puzzleForPlay);
           setBoard(b);
           setCurrentSolutions([]);
           setSolutionsReady(false);
@@ -574,6 +613,7 @@ export default function Home() {
           setSelectedOp(null);
           setGenerating(false);
           setTimerRunning(true);
+          refillPuzzleQueue();
 
           const id = ++solveAbortRef.current;
           if (workerRef.current) {
@@ -581,13 +621,13 @@ export default function Home() {
             workerRef.current.postMessage({
               type: "solveAll",
               id,
-              cards: data.puzzle.cards,
-              goal: data.puzzle.goal,
+              cards: puzzleForPlay.cards,
+              goal: puzzleForPlay.goal,
             });
           } else {
             setTimeout(() => {
               if (solveAbortRef.current !== id) return;
-              const solutions = solve(data.puzzle!.cards, data.puzzle!.goal);
+              const solutions = solve(puzzleForPlay!.cards, puzzleForPlay!.goal);
               if (solveAbortRef.current !== id) return;
               setCurrentSolutions(solutions);
               setSolutionsReady(true);
