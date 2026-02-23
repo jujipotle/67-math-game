@@ -213,8 +213,18 @@ export async function getSprintPuzzle(
       SELECT "sessionId", idx, goal, "cardsJson", "issuedAt", status, "finalExpr"
       FROM sprint_puzzles WHERE "sessionId" = ${sessionId} AND idx = ${idx}
     `;
-    const r = rows[0];
-    return r ? (r as typeof rows[0] & { finalExpr: string | null }) : null;
+    const r = rows[0] as
+      | {
+          sessionId: string;
+          idx: number;
+          goal: number;
+          cardsJson: string;
+          issuedAt: number;
+          status: string;
+          finalExpr: string | null;
+        }
+      | undefined;
+    return r ?? null;
   }
   return Promise.resolve(sqliteGetSprintPuzzle(sessionId, idx));
 }
