@@ -13,8 +13,10 @@ const OP_SYMBOLS: Record<string, string> = {
 type ReviewPanelProps = {
   goal: number;
   cards: number[];
+  useFaceCards: boolean;
   steps: Step[];
   solutions: string[];
+  solutionsReady: boolean;
   onContinue: () => void;
   onQuit: () => void;
 };
@@ -22,12 +24,13 @@ type ReviewPanelProps = {
 export default function ReviewPanel({
   goal,
   cards,
+  useFaceCards,
   steps,
   solutions,
+  solutionsReady,
   onContinue,
   onQuit,
 }: ReviewPanelProps) {
-  const [showSolutions, setShowSolutions] = useState(true);
   const skipped = steps.length === 0;
 
   const oneLineExpr =
@@ -38,6 +41,14 @@ export default function ReviewPanel({
           return s;
         })()
       : "";
+
+  const formatCard = (n: number): string => {
+    if (!useFaceCards) return n.toString();
+    if (n === 11) return "J";
+    if (n === 12) return "Q";
+    if (n === 13) return "K";
+    return n.toString();
+  };
 
   return (
     <div
@@ -50,10 +61,10 @@ export default function ReviewPanel({
       <div className="flex flex-col items-center px-5 max-w-md mx-auto w-full flex-1 min-h-0">
         <div className="text-3xl font-bold mb-1">{skipped ? "Skipped" : "Solved!"}</div>
         <div className="text-neutral-500 text-sm mb-6">
-          Target: {goal} · Cards: {cards.join(", ")}
+          Target: {goal} · Cards: {cards.map(formatCard).join(", ")}
         </div>
 
-        <div className="w-full mb-6">
+        <div className="w-full mb-4">
           {oneLineExpr && (
             <>
               <div className="text-xs uppercase tracking-widest text-neutral-400 mb-2">
@@ -66,30 +77,7 @@ export default function ReviewPanel({
           )}
         </div>
 
-        <div className="w-full mb-8 flex-1 min-h-0 flex flex-col">
-          <button
-            onClick={() => setShowSolutions(!showSolutions)}
-            className="text-xs uppercase tracking-widest text-neutral-400 active:text-neutral-600 transition-colors mb-2 flex items-center gap-1 min-h-[2.75rem] shrink-0"
-          >
-            All solutions ({solutions.length})
-            <span className="text-[10px]">{showSolutions ? "▲" : "▼"}</span>
-          </button>
-          {showSolutions && (
-            <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1">
-              {solutions.length === 0 ? (
-                <div className="text-sm text-neutral-400 italic">None found</div>
-              ) : (
-                solutions.map((sol, i) => (
-                  <div key={i} className="text-xs font-mono bg-neutral-50 rounded-lg px-3 py-1.5 break-all">
-                    {sol}
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="mt-auto w-full flex flex-col sm:flex-row gap-3 justify-center items-center pb-2">
+        <div className="w-full mb-4 flex flex-col sm:flex-row gap-3 justify-center items-center">
           <button
             onClick={onQuit}
             className="w-full max-w-xs h-12 border-2 border-neutral-300 text-neutral-600 rounded-xl font-medium active:bg-neutral-100 transition-colors"
@@ -103,6 +91,26 @@ export default function ReviewPanel({
             Continue
           </button>
         </div>
+
+        <div className="w-full mb-2 flex-1 min-h-0 flex flex-col">
+          <div className="text-xs uppercase tracking-widest text-neutral-400 mb-2">
+            All solutions{solutionsReady && solutions.length > 0 ? ` (${solutions.length})` : ""}
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1">
+            {!solutionsReady ? (
+              <div className="text-sm text-neutral-400 italic">Generating all solutions…</div>
+            ) : solutions.length === 0 ? (
+              <div className="text-sm text-neutral-400 italic">None found</div>
+            ) : (
+              solutions.map((sol, i) => (
+                <div key={i} className="text-xs font-mono bg-neutral-50 rounded-lg px-3 py-1.5 break-all">
+                  {sol}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
       </div>
     </div>
   );

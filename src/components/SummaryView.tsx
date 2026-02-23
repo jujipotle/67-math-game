@@ -7,6 +7,7 @@ type SummaryViewProps = {
   mode: string;
   solved: SolvedRecord[];
   skipped: SkippedRecord[];
+  useFaceCards: boolean;
   solvedCount: number;
   skippedCount: number;
   totalTimeMs: number;
@@ -18,7 +19,15 @@ function stripOuterParens(s: string): string {
   return s;
 }
 
-export default function SummaryView({ mode, solved, skipped, solvedCount, skippedCount, totalTimeMs, onHome }: SummaryViewProps) {
+function formatCard(n: number, useFaceCards: boolean): string {
+  if (!useFaceCards) return n.toString();
+  if (n === 11) return "J";
+  if (n === 12) return "Q";
+  if (n === 13) return "K";
+  return n.toString();
+}
+
+export default function SummaryView({ mode, solved, skipped, useFaceCards, solvedCount, skippedCount, totalTimeMs, onHome }: SummaryViewProps) {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [expandedSkipped, setExpandedSkipped] = useState<number | null>(null);
 
@@ -34,25 +43,24 @@ export default function SummaryView({ mode, solved, skipped, solvedCount, skippe
         paddingBottom: "max(1.5rem, env(safe-area-inset-bottom, 1.5rem))",
       }}
     >
-      <div className="flex flex-col items-center px-5 max-w-md mx-auto w-full flex-1">
+      <div className="flex flex-col items-center px-5 max-w-md mx-auto w-full flex-1 min-h-0">
         <div className="text-3xl font-bold mb-1">Session Complete</div>
         <div className="text-neutral-500 text-sm mb-1">
           {mode === "sprint" ? "5-Minute Sprint" : "Practice"}
         </div>
-        <div className="text-neutral-400 text-sm mb-4">
+        <div className="text-neutral-400 text-sm mb-2">
           {timeStr} elapsed · {solvedCount} solved{skippedCount > 0 ? ` · ${skippedCount} skipped` : ""}
         </div>
         <button
           onClick={onHome}
-          className="w-full max-w-xs h-12 mb-6 border-2 border-neutral-300 text-neutral-600 rounded-xl font-medium active:bg-neutral-100 transition-colors shrink-0"
+          className="w-full max-w-xs h-12 mb-4 border-2 border-neutral-300 text-neutral-600 rounded-xl font-medium active:bg-neutral-100 transition-colors shrink-0"
         >
           Back to Home
         </button>
-
         {solved.length === 0 && skipped.length === 0 ? (
           <div className="text-neutral-400 text-sm italic mb-8">No puzzles solved or skipped.</div>
         ) : (
-          <div className="w-full space-y-6 mb-8">
+          <div className="w-full space-y-6 mb-4">
             {/* Solved */}
             {solved.length > 0 && (
               <>
@@ -72,7 +80,11 @@ export default function SummaryView({ mode, solved, skipped, solvedCount, skippe
                             Target: {record.puzzle.goal}
                           </span>
                           <span className="text-neutral-400 text-xs">
-                            [{record.puzzle.cards.join(", ")}]
+                            [
+                            {record.puzzle.cards
+                              .map((c) => formatCard(c, useFaceCards))
+                              .join(", ")}
+                            ]
                           </span>
                         </div>
                         <span className="text-xs text-neutral-400 ml-2 shrink-0">
@@ -128,7 +140,11 @@ export default function SummaryView({ mode, solved, skipped, solvedCount, skippe
                             Target: {record.puzzle.goal}
                           </span>
                           <span className="text-neutral-400 text-xs">
-                            [{record.puzzle.cards.join(", ")}]
+                            [
+                            {record.puzzle.cards
+                              .map((c) => formatCard(c, useFaceCards))
+                              .join(", ")}
+                            ]
                           </span>
                         </div>
                         <span className="text-xs text-neutral-400 ml-2 shrink-0">
@@ -156,7 +172,6 @@ export default function SummaryView({ mode, solved, skipped, solvedCount, skippe
             )}
           </div>
         )}
-
       </div>
     </div>
   );

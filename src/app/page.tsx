@@ -13,7 +13,7 @@ import {
   Puzzle,
 } from "@/lib/types";
 import { rat, applyOp, eq, ratToString } from "@/lib/rational";
-import { solve } from "@/lib/solver";
+import { solve, hasSolution } from "@/lib/solver";
 import { generatePuzzle } from "@/lib/generator";
 import { saveSession } from "@/lib/storage";
 import TopBar from "@/components/TopBar";
@@ -83,6 +83,7 @@ export default function Home() {
   const [stepStack, setStepStack] = useState<Step[]>([]);
   const [selectedTile, setSelectedTile] = useState<number | null>(null);
   const [selectedOp, setSelectedOp] = useState<Op | null>(null);
+  const [useFaceCards, setUseFaceCards] = useState(false);
   const [playElapsedMs, setPlayElapsedMs] = useState(0);
   const [sprintRemainingMs, setSprintRemainingMs] = useState(SPRINT_DURATION_MS);
   const [timerRunning, setTimerRunning] = useState(false);
@@ -99,7 +100,7 @@ export default function Home() {
 
   const lastTickRef = useRef<number>(0);
   const solveAbortRef = useRef(0);
-  const nextPuzzleRef = useRef<{ puzzle: Puzzle; solutions: string[] } | null>(null);
+  const nextPuzzleRef = useRef<Puzzle | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const workerBusyRef = useRef(false);
   const skipDebounceRef = useRef(0);
@@ -134,9 +135,21 @@ export default function Home() {
   useEffect(() => {
     try {
       workerRef.current = new Worker(new URL("../workers/puzzle.worker.ts", import.meta.url));
-      workerRef.current.onmessage = (e: MessageEvent<{ puzzle: Puzzle; solutions: string[] }>) => {
+      workerRef.current.onmessage = (
+        e: MessageEvent<
+          | { kind: "puzzle"; puzzle: Puzzle }
+          | { kind: "solutions"; id: number; solutions: string[] }
+        >
+      ) => {
         workerBusyRef.current = false;
-        nextPuzzleRef.current = e.data;
+        const msg = e.data;
+        if (msg.kind === "puzzle") {
+          nextPuzzleRef.current = msg.puzzle;
+        } else if (msg.kind === "solutions") {
+          if (msg.id !== solveAbortRef.current) return;
+          setCurrentSolutions(msg.solutions);
+          setSolutionsReady(true);
+        }
       };
       workerRef.current.onerror = () => {
         workerBusyRef.current = false;
@@ -152,12 +165,20 @@ export default function Home() {
     if (workerBusyRef.current) return;
     if (workerRef.current) {
       workerBusyRef.current = true;
-      workerRef.current.postMessage(0);
+      workerRef.current.postMessage({ type: "preGenerate" });
     } else {
       setTimeout(() => {
-        const p = generatePuzzle();
-        const solutions = solve(p.cards, p.goal);
-        if (solutions.length > 0) nextPuzzleRef.current = { puzzle: p, solutions };
+        // Fallback: generate puzzles on the main thread, but only
+        // check for the existence of *any* solution before accepting.
+        // Full solution enumeration happens later.
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const p = generatePuzzle();
+          if (hasSolution(p.cards, p.goal)) {
+            nextPuzzleRef.current = p;
+            break;
+          }
+        }
       }, 0);
     }
   }, []);
@@ -166,11 +187,12 @@ export default function Home() {
     const cached = nextPuzzleRef.current;
     if (cached) {
       nextPuzzleRef.current = null;
-      const b = makeBoardFromPuzzle(cached.puzzle);
-      setPuzzle(cached.puzzle);
+      const puzzleForPlay = cached;
+      const b = makeBoardFromPuzzle(puzzleForPlay);
+      setPuzzle(puzzleForPlay);
       setBoard(b);
-      setCurrentSolutions(cached.solutions);
-      setSolutionsReady(true);
+      setCurrentSolutions([]);
+      setSolutionsReady(false);
       setPendingSolved(null);
       setPendingSkip(false);
       setHistoryStack([]);
@@ -180,14 +202,42 @@ export default function Home() {
       setGenerating(false);
       setTimerRunning(true);
       preGenerateNextPuzzle();
+
+      // Kick off full solution enumeration in the background.
+      const id = ++solveAbortRef.current;
+      if (workerRef.current) {
+        workerBusyRef.current = true;
+        workerRef.current.postMessage({
+          type: "solveAll",
+          id,
+          cards: puzzleForPlay.cards,
+          goal: puzzleForPlay.goal,
+        });
+      } else {
+        setTimeout(() => {
+          if (solveAbortRef.current !== id) return;
+          const solutions = solve(puzzleForPlay.cards, puzzleForPlay.goal);
+          if (solveAbortRef.current !== id) return;
+          setCurrentSolutions(solutions);
+          setSolutionsReady(true);
+        }, 0);
+      }
       return;
     }
 
     setGenerating(true);
-    const solveId = ++solveAbortRef.current;
+    const puzzleId = ++solveAbortRef.current;
     setTimeout(() => {
-      const p = generatePuzzle();
-      if (solveAbortRef.current !== solveId) return;
+      // Find a solvable puzzle (at least one solution).
+      // This intentionally runs on the main thread only when no worker/cached
+      // puzzle is available, so you see a "Generating next problem" screen.
+      // eslint-disable-next-line no-constant-condition
+      let p: Puzzle;
+      while (true) {
+        p = generatePuzzle();
+        if (hasSolution(p.cards, p.goal)) break;
+      }
+      if (solveAbortRef.current !== puzzleId) return;
       const b = makeBoardFromPuzzle(p);
       setPuzzle(p);
       setBoard(b);
@@ -202,21 +252,32 @@ export default function Home() {
       setGenerating(false);
       setTimerRunning(true);
 
-      setTimeout(() => {
-        if (solveAbortRef.current !== solveId) return;
-        const solutions = solve(p.cards, p.goal);
-        if (solveAbortRef.current !== solveId) return;
-        setCurrentSolutions(solutions);
-        setSolutionsReady(true);
-      }, 0);
+      // Enumerate all solutions in the background.
+      const id = puzzleId;
+      if (workerRef.current) {
+        workerBusyRef.current = true;
+        workerRef.current.postMessage({
+          type: "solveAll",
+          id,
+          cards: p.cards,
+          goal: p.goal,
+        });
+      } else {
+        setTimeout(() => {
+          if (solveAbortRef.current !== id) return;
+          const solutions = solve(p.cards, p.goal);
+          if (solveAbortRef.current !== id) return;
+          setCurrentSolutions(solutions);
+          setSolutionsReady(true);
+        }, 0);
+      }
       preGenerateNextPuzzle();
     }, 0);
   }, [preGenerateNextPuzzle]);
 
   useEffect(() => {
-    if (screen === "home") {
-      const t = setTimeout(preGenerateNextPuzzle, 100);
-      return () => clearTimeout(t);
+    if (screen === "home" || screen === "summary") {
+      preGenerateNextPuzzle();
     }
   }, [screen, preGenerateNextPuzzle]);
 
@@ -271,18 +332,23 @@ export default function Home() {
       };
       setSolved((prev) => [...prev, record]);
       setSolvedCount((prev) => prev + 1);
-      setScreen("review");
       setPendingSolved(null);
     } else if (pendingSkip) {
       const idx = sessionIndexRef.current++;
       setSkipped((prev) => [...prev, { puzzle: puzzle!, solutions: currentSolutions, sessionIndex: idx }]);
-      setScreen("review");
       setPendingSkip(false);
     }
   }, [solutionsReady, pendingSolved, pendingSkip, currentSolutions, puzzle]);
 
   const handleTileClick = (i: number) => {
     if (!board || !board.tiles[i].alive) return;
+
+    // Allow clicking an already-selected tile to deselect it
+    if (selectedTile === i) {
+      setSelectedTile(null);
+      setSelectedOp(null);
+      return;
+    }
 
     if (selectedTile === null) {
       setSelectedTile(i);
@@ -293,8 +359,6 @@ export default function Home() {
       setSelectedTile(i);
       return;
     }
-
-    if (i === selectedTile) return;
 
     const prevBoard = deepCopyBoard(board);
     const a = board.tiles[selectedTile];
@@ -353,7 +417,6 @@ export default function Home() {
           };
           setSolved((prev) => [...prev, record]);
           setSolvedCount((prev) => prev + 1);
-          setScreen("review");
         } else {
           setPendingSolved({
             puzzle: puzzle!,
@@ -362,6 +425,7 @@ export default function Home() {
             elapsed,
           });
         }
+        setScreen("review");
       }
     }
   };
@@ -409,10 +473,10 @@ export default function Home() {
     if (solutionsReady) {
       const idx = sessionIndexRef.current++;
       setSkipped((prev) => [...prev, { puzzle, solutions: currentSolutions, sessionIndex: idx }]);
-      setScreen("review");
     } else {
       setPendingSkip(true);
     }
+    setScreen("review");
   }, [puzzle, board, mode, solutionsReady, currentSolutions]);
 
   const handleHome = () => {
@@ -440,9 +504,18 @@ export default function Home() {
         <p className="text-neutral-500 text-sm text-center max-w-sm mb-2">
           <strong>Cards:</strong> Numbered 1–13.
         </p>
-        <p className="text-neutral-500 text-sm text-center max-w-sm mb-10">
+        <p className="text-neutral-500 text-sm text-center max-w-sm mb-4">
           <strong>Number of cards:</strong> 4 if &lt; 67, 5 if &lt; 67 × 2, 6 otherwise.
         </p>
+        <label className="flex items-center gap-2 text-sm text-neutral-600 mb-6">
+          <input
+            type="checkbox"
+            checked={useFaceCards}
+            onChange={(e) => setUseFaceCards(e.target.checked)}
+            className="h-4 w-4 rounded border-neutral-300 text-neutral-900"
+          />
+          <span>Show 11–13 as J/Q/K</span>
+        </label>
         <div className="flex flex-col gap-3 w-full max-w-xs">
           <button
             onClick={() => startSession("practice")}
@@ -470,6 +543,7 @@ export default function Home() {
         mode={mode}
         solved={solved}
         skipped={skipped}
+        useFaceCards={useFaceCards}
         solvedCount={solvedCount}
         skippedCount={skippedCount}
         totalTimeMs={totalTime}
@@ -484,8 +558,10 @@ export default function Home() {
       <ReviewPanel
         goal={puzzle.goal}
         cards={puzzle.cards}
+        useFaceCards={useFaceCards}
         steps={stepStack}
         solutions={currentSolutions}
+        solutionsReady={solutionsReady}
         onContinue={handleContinue}
         onQuit={handleQuit}
       />
@@ -501,11 +577,6 @@ export default function Home() {
 
     return (
       <div className="fixed inset-0 flex flex-col relative">
-        {(pendingSolved || pendingSkip) && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/80">
-            <span className="text-neutral-500 text-sm">Loading solutions…</span>
-          </div>
-        )}
         <TopBar
           solvedCount={solvedCount}
           timerDisplay={timerDisplay}
@@ -514,7 +585,7 @@ export default function Home() {
 
         {generating ? (
           <div className="flex-1 flex items-center justify-center">
-            <span className="text-neutral-400 text-sm">Generating puzzle...</span>
+            <span className="text-neutral-400 text-sm">Generating next problem…</span>
           </div>
         ) : (
           <div className="flex-1 flex flex-col" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom, 0.75rem))" }}>
@@ -526,6 +597,7 @@ export default function Home() {
               tiles={board.tiles}
               selectedIndex={selectedTile}
               onTileClick={handleTileClick}
+              useFaceCards={useFaceCards}
             />
 
             {/* Ops */}

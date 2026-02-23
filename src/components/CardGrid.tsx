@@ -7,14 +7,32 @@ type CardGridProps = {
   tiles: Tile[];
   selectedIndex: number | null;
   onTileClick: (index: number) => void;
+  useFaceCards: boolean;
 };
 
-export default function CardGrid({ tiles, selectedIndex, onTileClick }: CardGridProps) {
+export default function CardGrid({ tiles, selectedIndex, onTileClick, useFaceCards }: CardGridProps) {
   return (
     <div className="grid grid-cols-3 gap-2.5 px-4 max-w-sm mx-auto w-full">
       {tiles.map((tile, i) => {
         const isSelected = selectedIndex === i;
-        const display = tile.alive ? ratToString(tile.value) : "";
+
+        let display = "";
+        if (tile.alive) {
+          if (useFaceCards && tile.value.d === 1n) {
+            const intVal = Number(tile.value.n);
+            if (intVal === 11) {
+              display = "J";
+            } else if (intVal === 12) {
+              display = "Q";
+            } else if (intVal === 13) {
+              display = "K";
+            } else {
+              display = ratToString(tile.value);
+            }
+          } else {
+            display = ratToString(tile.value);
+          }
+        }
 
         return (
           <button
