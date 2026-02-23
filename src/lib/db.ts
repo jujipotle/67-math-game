@@ -19,7 +19,10 @@ const useNeon =
   typeof process !== "undefined" &&
   (!!process.env.DATABASE_URL || !!process.env.POSTGRES_URL);
 
-async function initNeonSchema(sql: ReturnType<typeof import("@neondatabase/serverless").neon>) {
+/** Accepts Neon's sql tagged-template function (typed loosely to avoid Neon generic mismatch). */
+async function initNeonSchema(
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>
+) {
   await sql`
     CREATE TABLE IF NOT EXISTS leaderboard_entries (
       id SERIAL PRIMARY KEY,
