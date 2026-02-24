@@ -717,15 +717,14 @@ export default function Home() {
           <br />
           <span className="text-neutral-500">Use every number exactly once.</span>
         </p>
-        <p className="text-neutral-500 text-sm text-center max-w-sm mb-2">
-          <strong>Target:</strong> Random number from 1–200.
-        </p>
-        <p className="text-neutral-500 text-sm text-center max-w-sm mb-2">
-          <strong>Cards:</strong> Numbered 1–13 (optionally shown as A, 2–10, J, Q, K).
-        </p>
-        <p className="text-neutral-500 text-sm text-center max-w-sm mb-4">
-          <strong>Number of cards:</strong> 4 if &lt; 67, 5 if &lt; 67 × 2, 6 otherwise.
-        </p>
+        <div className="text-neutral-500 text-sm max-w-sm mb-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 mx-auto w-fit">
+          <span className="font-semibold text-right block">Target:</span>
+          <span className="text-left">Random number from 1–200.</span>
+          <span className="font-semibold text-right block">Cards:</span>
+          <span className="text-left">Numbered 1–13.</span>
+          <span className="font-semibold text-right block">Number of cards:</span>
+          <span className="text-left">4 if &lt; 67, 5 if &lt; 67 × 2, 6 otherwise.</span>
+        </div>
         <label className="flex items-center gap-2 text-sm text-neutral-600 mb-6">
           <input
             type="checkbox"
