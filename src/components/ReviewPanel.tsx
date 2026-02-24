@@ -18,7 +18,6 @@ type ReviewPanelProps = {
   solutions: string[];
   solutionsReady: boolean;
   onContinue: () => void;
-  onQuit: () => void;
 };
 
 export default function ReviewPanel({
@@ -29,7 +28,6 @@ export default function ReviewPanel({
   solutions,
   solutionsReady,
   onContinue,
-  onQuit,
 }: ReviewPanelProps) {
   const skipped = steps.length === 0;
 
@@ -53,13 +51,13 @@ export default function ReviewPanel({
 
   return (
     <div
-      className="fixed inset-0 flex flex-col overflow-y-auto"
+      className="flex flex-col items-center px-5 max-w-md mx-auto w-full flex-1 min-h-0 overflow-y-auto"
       style={{
-        paddingTop: "max(1.5rem, env(safe-area-inset-top, 1.5rem))",
+        paddingTop: "1.5rem",
         paddingBottom: "max(1.5rem, env(safe-area-inset-bottom, 1.5rem))",
       }}
     >
-      <div className="flex flex-col items-center px-5 max-w-md mx-auto w-full flex-1 min-h-0">
+      <div className="flex flex-col items-center w-full flex-1 min-h-0">
         <div className="text-3xl font-bold mb-1">{skipped ? "Skipped" : "Solved!"}</div>
         <div className="text-neutral-500 text-sm mb-6">
           Target: {goal} · Cards: {cards.map(formatCard).join(", ")}
@@ -78,13 +76,7 @@ export default function ReviewPanel({
           )}
         </div>
 
-        <div className="w-full mb-4 flex flex-col sm:flex-row gap-3 justify-center items-center">
-          <button
-            onClick={onQuit}
-            className="w-full max-w-xs h-12 border-2 border-neutral-300 text-neutral-600 rounded-xl font-medium active:bg-neutral-100 transition-colors"
-          >
-            Quit
-          </button>
+        <div className="w-full mb-4 flex flex-col gap-3 justify-center items-center">
           <button
             onClick={onContinue}
             className="w-full max-w-xs h-14 bg-neutral-900 text-white rounded-xl font-medium text-lg active:bg-neutral-700 transition-colors"

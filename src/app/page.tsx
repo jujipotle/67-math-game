@@ -682,8 +682,9 @@ export default function Home() {
         }),
       })
         .then(async (r) => {
-          const data = (await r.json().catch(() => null)) as { endsAt?: number } | null;
-          if (data?.endsAt) setSprintRemainingMs(Math.max(0, data.endsAt - Date.now()));
+          if (!r.ok) return;
+          // Apply exactly 20s penalty locally so we don't add network latency to the penalty
+          setSprintRemainingMs((prev) => Math.max(0, prev - 20000));
         })
         .catch(() => {});
     } else if (mode === "sprint") {
@@ -792,16 +793,24 @@ export default function Home() {
   // REVIEW
   if (screen === "review" && puzzle) {
     return (
-      <ReviewPanel
-        goal={puzzle.goal}
-        cards={puzzle.cards}
-        useFaceCards={useFaceCards}
-        steps={stepStack}
-        solutions={currentSolutions}
-        solutionsReady={solutionsReady}
-        onContinue={handleContinue}
-        onQuit={handleQuit}
-      />
+      <div className="fixed inset-0 flex flex-col relative">
+        <TopBar
+          solvedCount={solvedCount}
+          timerDisplay={timerDisplay}
+          onQuit={handleQuit}
+        />
+        <div className="flex-1 flex">
+          <ReviewPanel
+            goal={puzzle.goal}
+            cards={puzzle.cards}
+            useFaceCards={useFaceCards}
+            steps={stepStack}
+            solutions={currentSolutions}
+            solutionsReady={solutionsReady}
+            onContinue={handleContinue}
+          />
+        </div>
+      </div>
     );
   }
 
