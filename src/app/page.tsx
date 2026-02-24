@@ -688,13 +688,9 @@ export default function Home() {
           outcome: "skipped",
         }),
       })
-        .then(async (r) => {
-          if (!r.ok) return;
-          // Server returns updated endsAt after applying the 20s penalty.
-          const data = (await r.json().catch(() => null)) as { endsAt?: number } | null;
-          if (data?.endsAt != null) {
-            setSprintRemainingMs(Math.max(0, data.endsAt - Date.now()));
-          }
+        .then(() => {
+          // Ignore server endsAt for local display; we already applied the 20s penalty
+          // immediately below to keep client and displayed timer in sync.
         })
         .catch(() => {});
       // Apply the 20s penalty immediately on the client so the timer updates

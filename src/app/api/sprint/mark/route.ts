@@ -41,15 +41,14 @@ export async function POST(req: Request) {
 
   const cards = JSON.parse(puzzleRow.cardsJson) as number[];
   const goal = puzzleRow.goal;
-  const sessionEnded = now > session.endsAt;
+  const remainingBeforeMs = session.endsAt - session.startedAt;
+  const issuedAt = Number(puzzleRow.issuedAt);
+  const timeOnPuzzleMs = Math.max(0, now - issuedAt);
+  const sessionEnded = remainingBeforeMs <= 0;
 
   if (outcome === "solved") {
-    // Accept late solve marks if puzzle was issued before session ended (prevents race where
-    // skip penalty ends session before solve mark arrives)
-    const issuedAt = Number(puzzleRow.issuedAt);
-    const endsAt = Number(session.endsAt);
-    if (sessionEnded && issuedAt >= endsAt) {
-      return NextResponse.json({ error: "session ended", endsAt }, { status: 410 });
+    if (sessionEnded) {
+      return NextResponse.json({ error: "session ended", endsAt: session.endsAt }, { status: 410 });
     }
     const finalExpr = (body?.finalExpr ?? "").trim();
     if (!finalExpr) return NextResponse.json({ error: "missing finalExpr" }, { status: 400 });
@@ -58,7 +57,10 @@ export async function POST(req: Request) {
     }
     await updateSprintPuzzleStatus({ sessionId, idx, status: "solved", finalExpr });
     await updateSprintSolved(sessionId, 1);
-    return NextResponse.json({ ok: true, endsAt: session.endsAt });
+    const remainingAfterMs = Math.max(0, remainingBeforeMs - timeOnPuzzleMs);
+    const nextEndsAt = session.startedAt + remainingAfterMs;
+    await updateSprintEndsAt(sessionId, nextEndsAt);
+    return NextResponse.json({ ok: true, endsAt: nextEndsAt });
   }
 
   // skipped
@@ -66,7 +68,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "session ended", endsAt: session.endsAt }, { status: 410 });
   }
   await updateSprintPuzzleStatus({ sessionId, idx, status: "skipped", finalExpr: null });
-  const nextEndsAt = Math.max(now, session.endsAt - SKIP_PENALTY_MS);
+  const remainingAfterMs = Math.max(0, remainingBeforeMs - timeOnPuzzleMs - SKIP_PENALTY_MS);
+  const nextEndsAt = session.startedAt + remainingAfterMs;
   await updateSprintEndsAt(sessionId, nextEndsAt);
   return NextResponse.json({ ok: true, endsAt: nextEndsAt });
 }

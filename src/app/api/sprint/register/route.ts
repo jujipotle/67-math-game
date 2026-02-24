@@ -18,7 +18,8 @@ export async function POST(req: Request) {
 
   const session = await getSprintSession(sessionId);
   if (!session) return NextResponse.json({ error: "invalid session" }, { status: 404 });
-  if (Date.now() > session.endsAt) {
+  const remainingMs = session.endsAt - session.startedAt;
+  if (remainingMs <= 0) {
     return NextResponse.json({ error: "session ended", endsAt: session.endsAt }, { status: 410 });
   }
 
