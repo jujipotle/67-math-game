@@ -109,8 +109,21 @@ export default function Home() {
   const workerBusyRef = useRef(false);
   const skipDebounceRef = useRef(0);
   const sessionIndexRef = useRef(1);
+  const leaderboardCacheRef = useRef<{ id: number; name: string; score: number; createdAt: number }[] | null>(null);
 
   const QUEUE_TARGET = 2;
+
+  useEffect(() => {
+    if (screen !== "home") return;
+    let cancelled = false;
+    fetch("/api/leaderboard", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data: { entries?: { id: number; name: string; score: number; createdAt: number }[] }) => {
+        if (!cancelled && data?.entries) leaderboardCacheRef.current = data.entries;
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [screen]);
 
   useEffect(() => {
     if (!timerRunning) return;
@@ -215,6 +228,7 @@ export default function Home() {
       setSelectedOp(null);
       setGenerating(false);
       setTimerRunning(true);
+      skipDebounceRef.current = 0;
       refillPuzzleQueue();
 
       // Kick off full solution enumeration in the background.
@@ -257,6 +271,7 @@ export default function Home() {
       setSelectedOp(null);
       setGenerating(false);
       setTimerRunning(true);
+      skipDebounceRef.current = 0;
 
       // Enumerate all solutions in the background.
       const id = puzzleId;
@@ -288,6 +303,8 @@ export default function Home() {
   const startSession = useCallback(
     (m: Mode) => {
       setMode(m);
+      setPuzzle(null);
+      setBoard(null);
       setScreen("play");
       setSolvedCount(0);
       setSkippedCount(0);
@@ -300,7 +317,8 @@ export default function Home() {
       setSprintPuzzleIdx(null);
 
       if (m === "sprint") {
-        setGenerating(true);
+        const hasCached = puzzleQueueRef.current.length > 0;
+        if (!hasCached) setGenerating(true);
         setTimerRunning(false);
         (async () => {
           try {
@@ -347,6 +365,7 @@ export default function Home() {
             setSelectedOp(null);
             setGenerating(false);
             setTimerRunning(true);
+            skipDebounceRef.current = 0;
             refillPuzzleQueue();
 
             const id = ++solveAbortRef.current;
@@ -574,9 +593,10 @@ export default function Home() {
   };
 
   const handleContinue = () => {
-    setScreen("play");
     if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx != null) {
-      setGenerating(true);
+      setPuzzle(null);
+      setBoard(null);
+      setScreen("play");
       setTimerRunning(false);
       const nextIdx = sprintPuzzleIdx + 1;
       (async () => {
@@ -613,6 +633,7 @@ export default function Home() {
           setSelectedOp(null);
           setGenerating(false);
           setTimerRunning(true);
+          skipDebounceRef.current = 0;
           refillPuzzleQueue();
 
           const id = ++solveAbortRef.current;
@@ -645,7 +666,7 @@ export default function Home() {
   const handleSkip = useCallback(() => {
     if (!puzzle || !board) return;
     const now = Date.now();
-    if (now - skipDebounceRef.current < 800) return;
+    if (now - skipDebounceRef.current < 400) return;
     skipDebounceRef.current = now;
     setSkippedCount((c) => c + 1);
     if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
@@ -740,7 +761,12 @@ export default function Home() {
 
   // LEADERBOARD
   if (screen === "leaderboard") {
-    return <LeaderboardView onBack={handleHome} />;
+    return (
+      <LeaderboardView
+        onBack={handleHome}
+        initialEntries={leaderboardCacheRef.current ?? undefined}
+      />
+    );
   }
 
   // SUMMARY
@@ -778,7 +804,23 @@ export default function Home() {
     );
   }
 
-  // PLAY
+  // PLAY (loading: waiting for first puzzle)
+  if (screen === "play" && (!board || !puzzle)) {
+    return (
+      <div className="fixed inset-0 flex flex-col">
+        <TopBar
+          solvedCount={solvedCount}
+          timerDisplay={timerDisplay}
+          onQuit={handleHome}
+        />
+        <div className="flex-1 flex items-center justify-center">
+          <span className="text-neutral-400 text-sm">Generating next problem…</span>
+        </div>
+      </div>
+    );
+  }
+
+  // PLAY (ready)
   if (screen === "play" && board && puzzle) {
     const aliveCount = board.tiles.filter((t) => t.alive).length;
     const wrongAnswer =
@@ -818,23 +860,23 @@ export default function Home() {
             />
 
             {/* Actions */}
-            <div className="flex justify-center gap-3 px-4 pb-2 flex-wrap">
+            <div className="flex gap-2.5 px-4 pb-2 max-w-sm mx-auto w-full">
               <button
                 onClick={handleUndo}
                 disabled={historyStack.length === 0}
-                className="min-h-[2.75rem] px-5 text-sm rounded-lg border border-neutral-200 text-neutral-500 active:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="flex-1 min-w-0 h-14 text-base font-medium rounded-xl border-2 border-neutral-200 text-neutral-500 active:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
                 Undo
               </button>
               <button
                 onClick={handleReset}
-                className="min-h-[2.75rem] px-5 text-sm rounded-lg border border-neutral-200 text-neutral-500 active:bg-neutral-100 transition-colors"
+                className="flex-1 min-w-0 h-14 text-base font-medium rounded-xl border-2 border-neutral-200 text-neutral-500 active:bg-neutral-100 transition-colors"
               >
                 Reset
               </button>
               <button
                 onClick={handleSkip}
-                className="min-h-[2.75rem] px-5 text-sm rounded-lg border border-neutral-300 text-neutral-600 active:bg-neutral-100 transition-colors"
+                className="flex-1 min-w-0 h-14 text-base font-medium rounded-xl border-2 border-neutral-300 text-neutral-600 active:bg-neutral-100 transition-colors"
               >
                 {mode === "sprint" ? "Skip (−20s)" : "Skip"}
               </button>

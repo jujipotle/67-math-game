@@ -28,11 +28,12 @@ function groupByScore(entries: Entry[]): { score: number; entries: Entry[] }[] {
 
 type LeaderboardViewProps = {
   onBack: () => void;
+  initialEntries?: Entry[];
 };
 
-export default function LeaderboardView({ onBack }: LeaderboardViewProps) {
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [loading, setLoading] = useState(true);
+export default function LeaderboardView({ onBack, initialEntries }: LeaderboardViewProps) {
+  const [entries, setEntries] = useState<Entry[]>(initialEntries ?? []);
+  const [loading, setLoading] = useState(!initialEntries?.length);
   const [error, setError] = useState<string | null>(null);
   const [expandedRank, setExpandedRank] = useState<number | null>(null);
 
@@ -40,7 +41,7 @@ export default function LeaderboardView({ onBack }: LeaderboardViewProps) {
     let cancelled = false;
     (async () => {
       try {
-        setLoading(true);
+        if (!initialEntries?.length) setLoading(true);
         setError(null);
         const res = await fetch("/api/leaderboard", { cache: "no-store" });
         const data = (await res.json()) as { entries?: Entry[]; error?: string };
@@ -55,7 +56,7 @@ export default function LeaderboardView({ onBack }: LeaderboardViewProps) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [initialEntries?.length]);
 
   const tiers = groupByScore(entries);
 

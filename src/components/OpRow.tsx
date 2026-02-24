@@ -17,14 +17,14 @@ type OpRowProps = {
 
 export default function OpRow({ selectedOp, disabled, onOpClick }: OpRowProps) {
   return (
-    <div className="flex justify-center gap-3 px-4 py-3">
+    <div className="flex gap-2.5 px-4 py-3 max-w-sm mx-auto w-full">
       {OPS.map(({ op, label }) => (
         <button
           key={op}
           disabled={disabled}
           onClick={() => onOpClick(op)}
           className={`
-            w-14 h-14 rounded-xl text-xl font-semibold
+            flex-1 min-w-0 h-16 rounded-xl text-2xl font-semibold
             transition-all duration-100 select-none
             ${disabled
               ? "bg-neutral-50 text-neutral-300 cursor-not-allowed"
