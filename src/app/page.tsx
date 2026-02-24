@@ -631,7 +631,12 @@ export default function Home() {
 
   const handleOpClick = (op: Op) => {
     if (selectedTile === null) return;
-    setSelectedOp(op);
+    // Toggle: if clicking the same operator, deselect it
+    if (selectedOp === op) {
+      setSelectedOp(null);
+    } else {
+      setSelectedOp(op);
+    }
   };
 
   const handleUndo = () => {
