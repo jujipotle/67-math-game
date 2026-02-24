@@ -593,10 +593,10 @@ export default function Home() {
   };
 
   const handleContinue = () => {
+    setScreen("play");
     if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx != null) {
       setPuzzle(null);
       setBoard(null);
-      setScreen("play");
       setTimerRunning(false);
       const nextIdx = sprintPuzzleIdx + 1;
       (async () => {
