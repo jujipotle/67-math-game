@@ -951,14 +951,14 @@ export default function Home() {
       mode === "sprint" && sprintRemainingMs <= 0;
 
     return (
-      <div className="fixed inset-0 flex flex-col relative">
+      <div className="fixed inset-0 flex flex-col">
         <TopBar
           solvedCount={solvedCount}
           timerDisplay={timerDisplay}
           onQuit={handleQuit}
           showShortcuts={showShortcuts}
         />
-        <div className="flex-1 flex">
+        <div className="flex-1 overflow-y-auto">
           <ReviewPanel
             goal={puzzle.goal}
             cards={puzzle.cards}

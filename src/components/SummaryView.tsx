@@ -114,7 +114,7 @@ export default function SummaryView({
         paddingBottom: "max(1.5rem, env(safe-area-inset-bottom, 1.5rem))",
       }}
     >
-      <div className="flex flex-col items-center px-5 max-w-md mx-auto w-full flex-1 min-h-0">
+      <div className="flex flex-col items-center px-5 pb-8 max-w-md mx-auto w-full flex-1 min-h-0">
         <div className="text-3xl font-bold mb-1">Session Complete</div>
         <div className="text-neutral-500 text-sm mb-1">
           {mode === "sprint" ? "5-Minute Sprint" : "Practice"}
