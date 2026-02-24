@@ -34,12 +34,14 @@ export type SolvedRecord = {
   solutions: string[];
   solvedAtMs: number;
   sessionIndex: number;
+  solutionsPending?: boolean;
 };
 
 export type SkippedRecord = {
   puzzle: Puzzle;
   solutions: string[];
   sessionIndex: number;
+  solutionsPending?: boolean;
 };
 
 export type Mode = "practice" | "sprint";

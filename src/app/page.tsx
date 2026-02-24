@@ -95,25 +95,20 @@ export default function Home() {
   const [currentSolutions, setCurrentSolutions] = useState<string[]>([]);
   const [solutionsReady, setSolutionsReady] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [pendingSolved, setPendingSolved] = useState<{
-    puzzle: Puzzle;
-    steps: Step[];
-    resultExpr: string;
-    elapsed: number;
-  } | null>(null);
-  const [pendingSkip, setPendingSkip] = useState<{ puzzle: Puzzle } | null>(null);
-
   const lastTickRef = useRef<number>(0);
   const solveAbortRef = useRef(0);
   const puzzleQueueRef = useRef<Puzzle[]>([]);
   const queueGenerationInFlightRef = useRef(false);
   const workerRef = useRef<Worker | null>(null);
   const workerBusyRef = useRef(false);
+  const bgWorkerRef = useRef<Worker | null>(null);
+  const bgWorkerBusyRef = useRef(false);
+  const bgTaskRef = useRef<{ kind: "solved" | "skipped"; sessionIndex: number } | null>(null);
   const skipDebounceRef = useRef(0);
   const sessionIndexRef = useRef(1);
   const leaderboardCacheRef = useRef<{ id: number; name: string; score: number; createdAt: number }[] | null>(null);
 
-  const QUEUE_TARGET = 2;
+  const QUEUE_TARGET = 4;
 
   useEffect(() => {
     if (screen !== "home") return;
@@ -169,8 +164,10 @@ export default function Home() {
     };
 
     queueGenerationInFlightRef.current = true;
-    if (workerRef.current) {
-      workerRef.current.postMessage({ type: "preGenerate" });
+    // Never use the main worker for preGenerate – keep it 100% for current puzzle solveAll.
+    // Use background worker when idle, else main thread.
+    if (bgWorkerRef.current && !bgWorkerBusyRef.current) {
+      bgWorkerRef.current.postMessage({ type: "preGenerate" });
       return;
     }
     setTimeout(() => {
@@ -209,10 +206,59 @@ export default function Home() {
         queueGenerationInFlightRef.current = false;
         workerRef.current = null;
       };
+
+      // Background worker for historical solutions (session review / backfill).
+      bgWorkerRef.current = new Worker(new URL("../workers/puzzle.worker.ts", import.meta.url));
+      bgWorkerRef.current.onmessage = (
+        e: MessageEvent<
+          | { kind: "puzzle"; puzzle: Puzzle }
+          | { kind: "solutions"; id: number; solutions: string[] }
+        >
+      ) => {
+        const msg = e.data;
+        if (msg.kind === "puzzle") {
+          if (puzzleQueueRef.current.length < QUEUE_TARGET) {
+            puzzleQueueRef.current.push(msg.puzzle);
+          }
+          queueGenerationInFlightRef.current = false;
+          refillPuzzleQueueRef.current();
+        } else if (msg.kind === "solutions") {
+          bgWorkerBusyRef.current = false;
+          const task = bgTaskRef.current;
+          bgTaskRef.current = null;
+          if (!task) return;
+          if (task.kind === "solved") {
+            setSolved((prev) =>
+              prev.map((r) =>
+                r.sessionIndex === task.sessionIndex
+                  ? { ...r, solutions: msg.solutions, solutionsPending: false }
+                  : r
+              )
+            );
+          } else {
+            setSkipped((prev) =>
+              prev.map((r) =>
+                r.sessionIndex === task.sessionIndex
+                  ? { ...r, solutions: msg.solutions, solutionsPending: false }
+                  : r
+              )
+            );
+          }
+        }
+      };
+      bgWorkerRef.current.onerror = () => {
+        bgWorkerBusyRef.current = false;
+        bgTaskRef.current = null;
+        bgWorkerRef.current = null;
+      };
     } catch {
       workerRef.current = null;
+      bgWorkerRef.current = null;
     }
-    return () => workerRef.current?.terminate();
+    return () => {
+      workerRef.current?.terminate();
+      bgWorkerRef.current?.terminate();
+    };
   }, []);
 
   const startNewPuzzle = useCallback(() => {
@@ -224,8 +270,6 @@ export default function Home() {
       setBoard(b);
       setCurrentSolutions([]);
       setSolutionsReady(false);
-      setPendingSolved(null);
-      setPendingSkip(null);
       setHistoryStack([]);
       setStepStack([]);
       setSelectedTile(null);
@@ -267,8 +311,6 @@ export default function Home() {
       setBoard(b);
       setCurrentSolutions([]);
       setSolutionsReady(false);
-      setPendingSolved(null);
-      setPendingSkip(null);
       setHistoryStack([]);
       setStepStack([]);
       setSelectedTile(null);
@@ -361,8 +403,6 @@ export default function Home() {
             setBoard(b);
             setCurrentSolutions([]);
             setSolutionsReady(false);
-            setPendingSolved(null);
-            setPendingSkip(null);
             setHistoryStack([]);
             setStepStack([]);
             setSelectedTile(null);
@@ -432,11 +472,17 @@ export default function Home() {
     }
     setSkippedCount((c) => c + 1);
     setStepStack([]);
-    if (solutionsReady && puzzle) {
+    if (puzzle) {
       const idx = sessionIndexRef.current++;
-      setSkipped((prev) => [...prev, { puzzle, solutions: currentSolutions, sessionIndex: idx }]);
-    } else if (puzzle) {
-      setPendingSkip({ puzzle });
+      setSkipped((prev) => [
+        ...prev,
+        {
+          puzzle,
+          solutions: solutionsReady ? currentSolutions : [],
+          sessionIndex: idx,
+          solutionsPending: !solutionsReady,
+        },
+      ]);
     }
     setScreen("review");
   }, [mode, puzzle, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx]);
@@ -447,28 +493,47 @@ export default function Home() {
     }
   }, [sprintRemainingMs, screen, mode, handleTimeUp]);
 
+  // Background solution generation queue for past puzzles.
+  // Priority: solved records in session order, then skipped records.
   useEffect(() => {
-    if (!solutionsReady) return;
-    if (pendingSolved) {
-      const { puzzle, steps, resultExpr, elapsed } = pendingSolved;
-      const idx = sessionIndexRef.current++;
-      const record: SolvedRecord = {
-        puzzle,
-        userSteps: steps,
-        userFinalExpr: resultExpr,
-        solutions: currentSolutions,
-        solvedAtMs: elapsed,
-        sessionIndex: idx,
-      };
-      setSolved((prev) => [...prev, record]);
-      setSolvedCount((prev) => prev + 1);
-      setPendingSolved(null);
-    } else if (pendingSkip) {
-      const idx = sessionIndexRef.current++;
-      setSkipped((prev) => [...prev, { puzzle: pendingSkip.puzzle, solutions: currentSolutions, sessionIndex: idx }]);
-      setPendingSkip(null);
+    if (!bgWorkerRef.current) return;
+    if (bgWorkerBusyRef.current) return;
+    if (screen === "home" || screen === "leaderboard") return;
+    // Never run background solution jobs while the current puzzle's solutions
+    // are still generating – prioritize current player interaction.
+    if (puzzle && !solutionsReady) return;
+
+    // Solved first.
+    const nextSolved = solved.find(
+      (r) => r.puzzle && (!r.solutions || r.solutions.length === 0)
+    );
+    if (nextSolved && nextSolved.puzzle) {
+      bgWorkerBusyRef.current = true;
+      bgTaskRef.current = { kind: "solved", sessionIndex: nextSolved.sessionIndex };
+      bgWorkerRef.current.postMessage({
+        type: "solveAll",
+        id: nextSolved.sessionIndex,
+        cards: nextSolved.puzzle.cards,
+        goal: nextSolved.puzzle.goal,
+      });
+      return;
     }
-  }, [solutionsReady, pendingSolved, pendingSkip, currentSolutions]);
+
+    // Then skipped.
+    const nextSkipped = skipped.find(
+      (r) => r.puzzle && (!r.solutions || r.solutions.length === 0)
+    );
+    if (nextSkipped && nextSkipped.puzzle) {
+      bgWorkerBusyRef.current = true;
+      bgTaskRef.current = { kind: "skipped", sessionIndex: nextSkipped.sessionIndex };
+      bgWorkerRef.current.postMessage({
+        type: "solveAll",
+        id: nextSkipped.sessionIndex,
+        cards: nextSkipped.puzzle.cards,
+        goal: nextSkipped.puzzle.goal,
+      });
+    }
+  }, [screen, solved, skipped, puzzle, solutionsReady]);
 
   const handleTileClick = (i: number) => {
     if (!board || !board.tiles[i].alive) return;
@@ -535,26 +600,18 @@ export default function Home() {
             ? playElapsedMs
             : SPRINT_DURATION_MS - sprintRemainingMs;
         const stepsWithLast = [...stepStack, step];
-        if (solutionsReady) {
-          const idx = sessionIndexRef.current++;
-          const record: SolvedRecord = {
-            puzzle: puzzle!,
-            userSteps: stepsWithLast,
-            userFinalExpr: resultExpr,
-            solutions: currentSolutions,
-            solvedAtMs: elapsed,
-            sessionIndex: idx,
-          };
-          setSolved((prev) => [...prev, record]);
-          setSolvedCount((prev) => prev + 1);
-        } else {
-          setPendingSolved({
-            puzzle: puzzle!,
-            steps: stepsWithLast,
-            resultExpr,
-            elapsed,
-          });
-        }
+        const idx = sessionIndexRef.current++;
+        const record: SolvedRecord = {
+          puzzle: puzzle!,
+          userSteps: stepsWithLast,
+          userFinalExpr: resultExpr,
+          solutions: solutionsReady ? currentSolutions : [],
+          solvedAtMs: elapsed,
+          sessionIndex: idx,
+          solutionsPending: !solutionsReady,
+        };
+        setSolved((prev) => [...prev, record]);
+        setSolvedCount((prev) => prev + 1);
         setScreen("review");
         if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
           fetch("/api/sprint/mark", {
@@ -602,17 +659,52 @@ export default function Home() {
       return;
     }
 
-    setScreen("play");
     if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx != null) {
-      setPuzzle(null);
-      setBoard(null);
-      setTimerRunning(false);
       const nextIdx = sprintPuzzleIdx + 1;
+      // Get the next puzzle immediately (from cache or freshly generated)
+      // so we can show it without waiting for the /api/sprint/register call.
+      let puzzleForPlay: Puzzle | undefined = puzzleQueueRef.current.shift();
+      if (!puzzleForPlay) puzzleForPlay = generatePuzzle();
+
+      setScreen("play");
+      const b = makeBoardFromPuzzle(puzzleForPlay);
+      setSprintPuzzleIdx(nextIdx);
+      setPuzzle(puzzleForPlay);
+      setBoard(b);
+      setCurrentSolutions([]);
+      setSolutionsReady(false);
+      setHistoryStack([]);
+      setStepStack([]);
+      setSelectedTile(null);
+      setSelectedOp(null);
+      setGenerating(false);
+      setTimerRunning(true);
+      skipDebounceRef.current = 0;
+      refillPuzzleQueue();
+
+      // Kick off full solution enumeration for the new puzzle.
+      const id = ++solveAbortRef.current;
+      if (workerRef.current) {
+        workerBusyRef.current = true;
+        workerRef.current.postMessage({
+          type: "solveAll",
+          id,
+          cards: puzzleForPlay.cards,
+          goal: puzzleForPlay.goal,
+        });
+      } else {
+        setTimeout(() => {
+          if (solveAbortRef.current !== id) return;
+          const solutions = solve(puzzleForPlay!.cards, puzzleForPlay!.goal);
+          if (solveAbortRef.current !== id) return;
+          setCurrentSolutions(solutions);
+          setSolutionsReady(true);
+        }, 0);
+      }
+
+      // Register the puzzle with the sprint session in the background.
       (async () => {
         try {
-          let puzzleForPlay: Puzzle | undefined = puzzleQueueRef.current.shift();
-          if (!puzzleForPlay) puzzleForPlay = generatePuzzle();
-
           const registerRes = await fetch("/api/sprint/register", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -624,44 +716,8 @@ export default function Home() {
             }),
           });
           if (!registerRes.ok) {
+            // If registration fails, end the sprint gracefully.
             handleQuit();
-            return;
-          }
-
-          setSprintPuzzleIdx(nextIdx);
-          const b = makeBoardFromPuzzle(puzzleForPlay);
-          setPuzzle(puzzleForPlay);
-          setBoard(b);
-          setCurrentSolutions([]);
-          setSolutionsReady(false);
-          setPendingSolved(null);
-          setPendingSkip(null);
-          setHistoryStack([]);
-          setStepStack([]);
-          setSelectedTile(null);
-          setSelectedOp(null);
-          setGenerating(false);
-          setTimerRunning(true);
-          skipDebounceRef.current = 0;
-          refillPuzzleQueue();
-
-          const id = ++solveAbortRef.current;
-          if (workerRef.current) {
-            workerBusyRef.current = true;
-            workerRef.current.postMessage({
-              type: "solveAll",
-              id,
-              cards: puzzleForPlay.cards,
-              goal: puzzleForPlay.goal,
-            });
-          } else {
-            setTimeout(() => {
-              if (solveAbortRef.current !== id) return;
-              const solutions = solve(puzzleForPlay!.cards, puzzleForPlay!.goal);
-              if (solveAbortRef.current !== id) return;
-              setCurrentSolutions(solutions);
-              setSolutionsReady(true);
-            }, 0);
           }
         } catch {
           handleQuit();
@@ -669,6 +725,7 @@ export default function Home() {
       })();
       return;
     }
+    setScreen("play");
     startNewPuzzle();
   };
 
@@ -701,11 +758,17 @@ export default function Home() {
     }
     setTimerRunning(false);
     setStepStack([]);
-    if (solutionsReady && puzzle) {
+    if (puzzle) {
       const idx = sessionIndexRef.current++;
-      setSkipped((prev) => [...prev, { puzzle, solutions: currentSolutions, sessionIndex: idx }]);
-    } else if (puzzle) {
-      setPendingSkip({ puzzle });
+      setSkipped((prev) => [
+        ...prev,
+        {
+          puzzle,
+          solutions: solutionsReady ? currentSolutions : [],
+          sessionIndex: idx,
+          solutionsPending: !solutionsReady,
+        },
+      ]);
     }
     setScreen("review");
   }, [puzzle, board, mode, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx]);

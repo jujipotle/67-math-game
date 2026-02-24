@@ -204,7 +204,7 @@ export default function SummaryView({
                       )}
                     </div>
                   )}
-                  <div className="space-y-1 max-h-40 overflow-y-auto">
+                  <div className="space-y-1">
                     {lbTiers.map((tier, i) => {
                       const rank = i + 1;
                       const showNames = rank <= 3;
@@ -300,14 +300,22 @@ export default function SummaryView({
                           </div>
                           <div>
                             <div className="text-xs uppercase tracking-widest text-neutral-400 mb-1">
-                              All solutions ({record.solutions.length})
+                              {record.solutions && record.solutions.length > 0
+                                ? `All solutions (${record.solutions.length})`
+                                : "All solutions"}
                             </div>
-                            <div className="max-h-40 overflow-y-auto space-y-1">
-                              {record.solutions.map((sol, j) => (
-                                <div key={j} className="text-[11px] font-mono bg-neutral-50 rounded-lg px-2 py-1 break-all">
-                                  {sol}
+                            <div className="max-h-64 overflow-y-auto space-y-1">
+                              {record.solutions && record.solutions.length > 0 ? (
+                                record.solutions.map((sol, j) => (
+                                  <div key={j} className="text-[11px] font-mono bg-neutral-50 rounded-lg px-2 py-1 break-all">
+                                    {sol}
+                                  </div>
+                                ))
+                              ) : (
+                                <div className="text-sm text-neutral-400 italic">
+                                  Generating all solutions…
                                 </div>
-                              ))}
+                              )}
                             </div>
                           </div>
                         </div>
@@ -351,14 +359,22 @@ export default function SummaryView({
                       {expandedSkipped === i && (
                         <div className="px-4 pb-3 border-t border-neutral-100">
                           <div className="text-xs uppercase tracking-widest text-neutral-400 mt-3 mb-1">
-                            All solutions ({record.solutions.length})
+                            {record.solutions && record.solutions.length > 0
+                              ? `All solutions (${record.solutions.length})`
+                              : "All solutions"}
                           </div>
-                          <div className="max-h-40 overflow-y-auto space-y-1">
-                            {record.solutions.map((sol, j) => (
-                              <div key={j} className="text-[11px] font-mono bg-neutral-50 rounded-lg px-2 py-1 break-all">
-                                {sol}
+                          <div className="max-h-64 overflow-y-auto space-y-1">
+                            {record.solutions && record.solutions.length > 0 ? (
+                              record.solutions.map((sol, j) => (
+                                <div key={j} className="text-[11px] font-mono bg-neutral-50 rounded-lg px-2 py-1 break-all">
+                                  {sol}
+                                </div>
+                              ))
+                            ) : (
+                              <div className="text-sm text-neutral-400 italic">
+                                Generating all solutions…
                               </div>
-                            ))}
+                            )}
                           </div>
                         </div>
                       )}
