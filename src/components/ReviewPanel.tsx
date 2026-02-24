@@ -19,6 +19,7 @@ type ReviewPanelProps = {
   solutionsReady: boolean;
   onContinue: () => void;
   showShortcuts: boolean;
+  isSprintEnding?: boolean;
 };
 
 export default function ReviewPanel({
@@ -30,6 +31,7 @@ export default function ReviewPanel({
   solutionsReady,
   onContinue,
   showShortcuts,
+  isSprintEnding = false,
 }: ReviewPanelProps) {
   const skipped = steps.length === 0;
 
@@ -87,7 +89,7 @@ export default function ReviewPanel({
               {showShortcuts && (
                 <span className="text-[11px] text-neutral-200">space</span>
               )}
-              <span>Continue</span>
+              <span>{isSprintEnding ? "See results" : "Continue"}</span>
             </div>
           </button>
         </div>

@@ -597,6 +597,11 @@ export default function Home() {
   };
 
   const handleContinue = () => {
+    if (mode === "sprint" && sprintRemainingMs <= 0) {
+      handleQuit();
+      return;
+    }
+
     setScreen("play");
     if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx != null) {
       setPuzzle(null);
@@ -893,6 +898,9 @@ export default function Home() {
 
   // REVIEW
   if (screen === "review" && puzzle) {
+    const isSprintEnding =
+      mode === "sprint" && sprintRemainingMs <= 0;
+
     return (
       <div className="fixed inset-0 flex flex-col relative">
         <TopBar
@@ -911,6 +919,7 @@ export default function Home() {
             solutionsReady={solutionsReady}
             onContinue={handleContinue}
             showShortcuts={showShortcuts}
+            isSprintEnding={isSprintEnding}
           />
         </div>
       </div>
