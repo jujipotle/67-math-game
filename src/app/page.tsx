@@ -864,22 +864,6 @@ export default function Home() {
         return;
       }
 
-      // Legacy actions: z=undo, x=reset, c=skip
-      if (key === "z") {
-        e.preventDefault();
-        handleUndo();
-        return;
-      }
-      if (key === "x") {
-        e.preventDefault();
-        handleReset();
-        return;
-      }
-      if (key === "c") {
-        e.preventDefault();
-        handleSkip();
-        return;
-      }
     };
 
     window.addEventListener("keydown", handleKeyDown);
@@ -1061,7 +1045,7 @@ export default function Home() {
               >
                 <div className="flex flex-col items-center justify-center leading-tight">
                   {showShortcuts && (
-                    <span className="text-[11px] text-neutral-400">z</span>
+                    <span className="text-[11px] text-neutral-400">a</span>
                   )}
                   <span>Undo</span>
                 </div>
@@ -1072,7 +1056,7 @@ export default function Home() {
               >
                 <div className="flex flex-col items-center justify-center leading-tight">
                   {showShortcuts && (
-                    <span className="text-[11px] text-neutral-400">x</span>
+                    <span className="text-[11px] text-neutral-400">s</span>
                   )}
                   <span>Reset</span>
                 </div>
@@ -1083,7 +1067,7 @@ export default function Home() {
               >
                 <div className="flex flex-col items-center justify-center leading-tight">
                   {showShortcuts && (
-                    <span className="text-[11px] text-neutral-400">c</span>
+                    <span className="text-[11px] text-neutral-400">d</span>
                   )}
                   <span className="text-sm sm:text-base">
                     {mode === "sprint" ? "Skip (-20 sec)" : "Skip"}
