@@ -131,8 +131,10 @@ export default function Home() {
 
     const interval = setInterval(() => {
       const now = performance.now();
-      const dt = now - lastTickRef.current;
+      let dt = now - lastTickRef.current;
       lastTickRef.current = now;
+      // Cap dt to prevent tab throttling from eating time in one tick
+      if (dt > 2000) dt = 2000;
 
       if (mode === "practice") {
         setPlayElapsedMs((prev) => prev + dt);

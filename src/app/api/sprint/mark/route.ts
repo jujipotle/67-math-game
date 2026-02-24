@@ -33,10 +33,6 @@ export async function POST(req: Request) {
   if (!session) return NextResponse.json({ error: "invalid session" }, { status: 404 });
 
   const now = Date.now();
-  if (now > session.endsAt) {
-    return NextResponse.json({ error: "session ended", endsAt: session.endsAt }, { status: 410 });
-  }
-
   const puzzleRow = await getSprintPuzzle(sessionId, idx);
   if (!puzzleRow) return NextResponse.json({ error: "invalid puzzle" }, { status: 404 });
   if (puzzleRow.status !== "issued") {
@@ -45,8 +41,16 @@ export async function POST(req: Request) {
 
   const cards = JSON.parse(puzzleRow.cardsJson) as number[];
   const goal = puzzleRow.goal;
+  const sessionEnded = now > session.endsAt;
 
   if (outcome === "solved") {
+    // Accept late solve marks if puzzle was issued before session ended (prevents race where
+    // skip penalty ends session before solve mark arrives)
+    const issuedAt = Number(puzzleRow.issuedAt);
+    const endsAt = Number(session.endsAt);
+    if (sessionEnded && issuedAt >= endsAt) {
+      return NextResponse.json({ error: "session ended", endsAt }, { status: 410 });
+    }
     const finalExpr = (body?.finalExpr ?? "").trim();
     if (!finalExpr) return NextResponse.json({ error: "missing finalExpr" }, { status: 400 });
     if (!validateFinalExpr(finalExpr, cards, goal)) {
@@ -58,6 +62,9 @@ export async function POST(req: Request) {
   }
 
   // skipped
+  if (sessionEnded) {
+    return NextResponse.json({ error: "session ended", endsAt: session.endsAt }, { status: 410 });
+  }
   await updateSprintPuzzleStatus({ sessionId, idx, status: "skipped", finalExpr: null });
   const nextEndsAt = Math.max(now, session.endsAt - SKIP_PENALTY_MS);
   await updateSprintEndsAt(sessionId, nextEndsAt);
