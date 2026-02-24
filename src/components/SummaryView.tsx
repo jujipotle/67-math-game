@@ -265,7 +265,7 @@ export default function SummaryView({
                   Solved ({solved.length})
                 </div>
                 <div className="space-y-3">
-                  {solved.map((record, i) => (
+                  {solved.filter((r) => r.puzzle != null).map((record, i) => (
                     <div key={i} className="border border-neutral-200 rounded-xl overflow-hidden">
                       <button
                         className="w-full flex items-center justify-between px-4 min-h-[3rem] active:bg-neutral-50 transition-colors text-left"
@@ -325,7 +325,7 @@ export default function SummaryView({
                   Skipped ({skipped.length})
                 </div>
                 <div className="space-y-3">
-                  {skipped.map((record, i) => (
+                  {skipped.filter((r) => r.puzzle != null).map((record, i) => (
                     <div key={i} className="border border-neutral-200 rounded-xl overflow-hidden">
                       <button
                         className="w-full flex items-center justify-between px-4 min-h-[3rem] active:bg-neutral-50 transition-colors text-left"

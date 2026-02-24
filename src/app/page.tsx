@@ -99,7 +99,7 @@ export default function Home() {
     resultExpr: string;
     elapsed: number;
   } | null>(null);
-  const [pendingSkip, setPendingSkip] = useState(false);
+  const [pendingSkip, setPendingSkip] = useState<{ puzzle: Puzzle } | null>(null);
 
   const lastTickRef = useRef<number>(0);
   const solveAbortRef = useRef(0);
@@ -221,7 +221,7 @@ export default function Home() {
       setCurrentSolutions([]);
       setSolutionsReady(false);
       setPendingSolved(null);
-      setPendingSkip(false);
+      setPendingSkip(null);
       setHistoryStack([]);
       setStepStack([]);
       setSelectedTile(null);
@@ -264,7 +264,7 @@ export default function Home() {
       setCurrentSolutions([]);
       setSolutionsReady(false);
       setPendingSolved(null);
-      setPendingSkip(false);
+      setPendingSkip(null);
       setHistoryStack([]);
       setStepStack([]);
       setSelectedTile(null);
@@ -358,7 +358,7 @@ export default function Home() {
             setCurrentSolutions([]);
             setSolutionsReady(false);
             setPendingSolved(null);
-            setPendingSkip(false);
+            setPendingSkip(null);
             setHistoryStack([]);
             setStepStack([]);
             setSelectedTile(null);
@@ -431,8 +431,8 @@ export default function Home() {
     if (solutionsReady && puzzle) {
       const idx = sessionIndexRef.current++;
       setSkipped((prev) => [...prev, { puzzle, solutions: currentSolutions, sessionIndex: idx }]);
-    } else {
-      setPendingSkip(true);
+    } else if (puzzle) {
+      setPendingSkip({ puzzle });
     }
     setScreen("review");
   }, [mode, puzzle, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx]);
@@ -461,10 +461,10 @@ export default function Home() {
       setPendingSolved(null);
     } else if (pendingSkip) {
       const idx = sessionIndexRef.current++;
-      setSkipped((prev) => [...prev, { puzzle: puzzle!, solutions: currentSolutions, sessionIndex: idx }]);
-      setPendingSkip(false);
+      setSkipped((prev) => [...prev, { puzzle: pendingSkip.puzzle, solutions: currentSolutions, sessionIndex: idx }]);
+      setPendingSkip(null);
     }
-  }, [solutionsReady, pendingSolved, pendingSkip, currentSolutions, puzzle]);
+  }, [solutionsReady, pendingSolved, pendingSkip, currentSolutions]);
 
   const handleTileClick = (i: number) => {
     if (!board || !board.tiles[i].alive) return;
@@ -626,7 +626,7 @@ export default function Home() {
           setCurrentSolutions([]);
           setSolutionsReady(false);
           setPendingSolved(null);
-          setPendingSkip(false);
+          setPendingSkip(null);
           setHistoryStack([]);
           setStepStack([]);
           setSelectedTile(null);
@@ -689,11 +689,11 @@ export default function Home() {
     }
     setTimerRunning(false);
     setStepStack([]);
-    if (solutionsReady) {
+    if (solutionsReady && puzzle) {
       const idx = sessionIndexRef.current++;
       setSkipped((prev) => [...prev, { puzzle, solutions: currentSolutions, sessionIndex: idx }]);
-    } else {
-      setPendingSkip(true);
+    } else if (puzzle) {
+      setPendingSkip({ puzzle });
     }
     setScreen("review");
   }, [puzzle, board, mode, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx]);
