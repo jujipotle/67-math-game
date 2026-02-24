@@ -690,10 +690,16 @@ export default function Home() {
       })
         .then(async (r) => {
           if (!r.ok) return;
-          // Apply exactly 20s penalty locally so we don't add network latency to the penalty
-          setSprintRemainingMs((prev) => Math.max(0, prev - 20000));
+          // Server returns updated endsAt after applying the 20s penalty.
+          const data = (await r.json().catch(() => null)) as { endsAt?: number } | null;
+          if (data?.endsAt != null) {
+            setSprintRemainingMs(Math.max(0, data.endsAt - Date.now()));
+          }
         })
         .catch(() => {});
+      // Apply the 20s penalty immediately on the client so the timer updates
+      // without waiting for the network round-trip.
+      setSprintRemainingMs((prev) => Math.max(0, prev - 20000));
     } else if (mode === "sprint") {
       setSprintRemainingMs((prev) => Math.max(0, prev - 20000));
     }
