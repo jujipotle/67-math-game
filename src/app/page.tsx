@@ -85,6 +85,8 @@ export default function Home() {
   const [selectedTile, setSelectedTile] = useState<number | null>(null);
   const [selectedOp, setSelectedOp] = useState<Op | null>(null);
   const [useFaceCards, setUseFaceCards] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [useNumpadMapping, setUseNumpadMapping] = useState(false);
   const [sprintSessionId, setSprintSessionId] = useState<string | null>(null);
   const [sprintPuzzleIdx, setSprintPuzzleIdx] = useState<number | null>(null);
   const [playElapsedMs, setPlayElapsedMs] = useState(0);
@@ -706,6 +708,114 @@ export default function Home() {
     setTimerRunning(false);
   };
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return;
+      }
+
+      const rawKey = e.key;
+      const key = rawKey.toLowerCase();
+
+      // Global quit from play/review: Escape
+      if ((screen === "play" || screen === "review") && (rawKey === "Escape" || key === "escape")) {
+        e.preventDefault();
+        handleQuit();
+        return;
+      }
+
+      // Review: space = Continue
+      if (screen === "review" && rawKey === " ") {
+        e.preventDefault();
+        handleContinue();
+        return;
+      }
+
+      if (screen !== "play") return;
+
+      // Card selection: 1-6 map to the 6 card slots (top row 1–3, bottom row 4–6).
+      if (key >= "1" && key <= "6") {
+        if (!board) return;
+        const n = Number(key);
+        let index: number | null = null;
+        if (useNumpadMapping) {
+          // Numpad-style: 1–3 bottom row, 4–6 top row (all left→right)
+          const map: (number | null)[] = [null, 3, 4, 5, 0, 1, 2];
+          index = map[n] ?? null;
+        } else {
+          // Default: 1–3 top row, 4–6 bottom row (all left→right)
+          index = n - 1;
+        }
+        if (index == null) return;
+        if (index < 0 || index >= board.tiles.length) return;
+        if (!board.tiles[index].alive) return;
+        e.preventDefault();
+        handleTileClick(index);
+        return;
+      }
+
+      // Ops: q=+, w=−, e=×, r=÷
+      if (key === "q") {
+        e.preventDefault();
+        handleOpClick("+");
+        return;
+      }
+      if (key === "w") {
+        e.preventDefault();
+        handleOpClick("-");
+        return;
+      }
+      if (key === "e") {
+        e.preventDefault();
+        handleOpClick("*");
+        return;
+      }
+      if (key === "r") {
+        e.preventDefault();
+        handleOpClick("/");
+        return;
+      }
+
+      // Actions primary: a=undo, s=reset, d=skip
+      if (key === "a") {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+      if (key === "s") {
+        e.preventDefault();
+        handleReset();
+        return;
+      }
+      if (key === "d") {
+        e.preventDefault();
+        handleSkip();
+        return;
+      }
+
+      // Legacy actions: z=undo, x=reset, c=skip
+      if (key === "z") {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+      if (key === "x") {
+        e.preventDefault();
+        handleReset();
+        return;
+      }
+      if (key === "c") {
+        e.preventDefault();
+        handleSkip();
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [screen, board, useNumpadMapping, handleQuit, handleTileClick, handleOpClick, handleUndo, handleReset, handleSkip, handleContinue]);
+
   const timerDisplay =
     mode === "practice" ? formatTime(playElapsedMs) : formatTime(sprintRemainingMs);
 
@@ -714,8 +824,8 @@ export default function Home() {
     return (
       <div className="fixed inset-0 flex flex-col items-center justify-center px-6 overflow-y-auto"
         style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
-        <h1 className="text-7xl font-bold mb-6">67</h1>
-        <p className="text-neutral-600 text-base text-center max-w-sm mb-6 leading-relaxed">
+        <h1 className="text-6xl sm:text-7xl md:text-8xl font-bold mb-6">67</h1>
+        <p className="text-neutral-600 text-lg text-center max-w-sm mb-6 leading-relaxed">
           Combine all cards with + − × ÷ to reach the target.
           <br />
           <span className="text-neutral-500">Use every number exactly once.</span>
@@ -728,25 +838,16 @@ export default function Home() {
           <span className="font-semibold text-right block">Number of cards:</span>
           <span className="text-left">4 if &lt; 67, 5 if &lt; 67 × 2, 6 otherwise.</span>
         </div>
-        <label className="flex items-center gap-2 text-sm text-neutral-600 mb-6">
-          <input
-            type="checkbox"
-            checked={useFaceCards}
-            onChange={(e) => setUseFaceCards(e.target.checked)}
-            className="h-4 w-4 rounded border-neutral-300 text-neutral-900"
-          />
-          <span>Show A, J, Q, K for 1, 11, 12, 13</span>
-        </label>
         <div className="flex flex-col gap-3 w-full max-w-xs">
           <button
             onClick={() => startSession("practice")}
-            className="h-14 bg-neutral-900 text-white rounded-xl font-medium text-lg active:bg-neutral-700 transition-colors"
+            className="h-14 sm:h-16 bg-neutral-900 text-white rounded-xl font-medium text-lg sm:text-xl active:bg-neutral-700 transition-colors"
           >
             Practice
           </button>
           <button
             onClick={() => startSession("sprint")}
-            className="h-14 border-2 border-neutral-900 text-neutral-900 rounded-xl font-medium text-lg active:bg-neutral-100 transition-colors"
+            className="h-14 sm:h-16 border-2 border-neutral-900 text-neutral-900 rounded-xl font-medium text-lg sm:text-xl active:bg-neutral-100 transition-colors"
           >
             5-Minute Sprint
           </button>
@@ -798,6 +899,7 @@ export default function Home() {
           solvedCount={solvedCount}
           timerDisplay={timerDisplay}
           onQuit={handleQuit}
+          showShortcuts={showShortcuts}
         />
         <div className="flex-1 flex">
           <ReviewPanel
@@ -808,6 +910,7 @@ export default function Home() {
             solutions={currentSolutions}
             solutionsReady={solutionsReady}
             onContinue={handleContinue}
+            showShortcuts={showShortcuts}
           />
         </div>
       </div>
@@ -822,6 +925,7 @@ export default function Home() {
           solvedCount={solvedCount}
           timerDisplay={timerDisplay}
           onQuit={handleHome}
+          showShortcuts={showShortcuts}
         />
         <div className="flex-1 flex items-center justify-center">
           <span className="text-neutral-400 text-sm">Generating next problem…</span>
@@ -843,6 +947,7 @@ export default function Home() {
           solvedCount={solvedCount}
           timerDisplay={timerDisplay}
           onQuit={handleQuit}
+          showShortcuts={showShortcuts}
         />
 
         {generating ? (
@@ -860,6 +965,9 @@ export default function Home() {
               selectedIndex={selectedTile}
               onTileClick={handleTileClick}
               useFaceCards={useFaceCards}
+              showShortcuts={showShortcuts}
+              highlightWrong={wrongAnswer}
+              useNumpadMapping={useNumpadMapping}
             />
 
             {/* Ops */}
@@ -867,6 +975,7 @@ export default function Home() {
               selectedOp={selectedOp}
               disabled={selectedTile === null}
               onOpClick={handleOpClick}
+              showShortcuts={showShortcuts}
             />
 
             {/* Actions */}
@@ -874,22 +983,116 @@ export default function Home() {
               <button
                 onClick={handleUndo}
                 disabled={historyStack.length === 0}
-                className="flex-1 min-w-0 h-14 text-base font-medium rounded-xl border-2 border-neutral-200 text-neutral-500 active:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className="flex-1 min-w-0 h-16 text-base sm:text-lg font-medium rounded-xl border-2 border-neutral-200 text-neutral-500 active:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
-                Undo
+                <div className="flex flex-col items-center justify-center leading-tight">
+                  {showShortcuts && (
+                    <span className="text-[11px] text-neutral-400">z</span>
+                  )}
+                  <span>Undo</span>
+                </div>
               </button>
               <button
                 onClick={handleReset}
-                className="flex-1 min-w-0 h-14 text-base font-medium rounded-xl border-2 border-neutral-200 text-neutral-500 active:bg-neutral-100 transition-colors"
+                className="flex-1 min-w-0 h-16 text-base sm:text-lg font-medium rounded-xl border-2 border-neutral-200 text-neutral-500 active:bg-neutral-100 transition-colors"
               >
-                Reset
+                <div className="flex flex-col items-center justify-center leading-tight">
+                  {showShortcuts && (
+                    <span className="text-[11px] text-neutral-400">x</span>
+                  )}
+                  <span>Reset</span>
+                </div>
               </button>
               <button
                 onClick={handleSkip}
-                className="flex-1 min-w-0 h-14 text-base font-medium rounded-xl border-2 border-neutral-300 text-neutral-600 active:bg-neutral-100 transition-colors"
+                className="flex-1 min-w-0 h-16 text-base sm:text-lg font-medium rounded-xl border-2 border-neutral-300 text-neutral-600 active:bg-neutral-100 transition-colors"
               >
-                {mode === "sprint" ? "Skip (−20s)" : "Skip"}
+                <div className="flex flex-col items-center justify-center leading-tight">
+                  {showShortcuts && (
+                    <span className="text-[11px] text-neutral-400">c</span>
+                  )}
+                  <span className="text-sm sm:text-base">
+                    {mode === "sprint" ? "Skip (-20 sec)" : "Skip"}
+                  </span>
+                </div>
               </button>
+            </div>
+
+            {/* Toggles */}
+            <div className="px-4 pb-3 max-w-sm mx-auto w-full text-sm text-neutral-600">
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={(e) => {
+                    setShowShortcuts((v) => !v);
+                    (e.currentTarget as HTMLButtonElement).blur();
+                  }}
+                  className="w-full flex items-center justify-between px-3 py-2 rounded-xl border border-neutral-200 bg-white active:bg-neutral-50 focus:outline-none focus-visible:outline-none"
+                >
+                  <span>Show keyboard shortcuts</span>
+                  <span
+                    aria-hidden
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                      showShortcuts ? "bg-neutral-900" : "bg-neutral-200"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                        showShortcuts ? "translate-x-5" : "translate-x-1"
+                      }`}
+                    />
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={(e) => {
+                    setUseNumpadMapping((v) => !v);
+                    (e.currentTarget as HTMLButtonElement).blur();
+                  }}
+                  className="w-full flex items-center justify-between px-3 py-2 rounded-xl border border-neutral-200 bg-white active:bg-neutral-50 focus:outline-none focus-visible:outline-none"
+                >
+                  <span>Use numpad for cards</span>
+                  <span
+                    aria-hidden
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                      useNumpadMapping ? "bg-neutral-900" : "bg-neutral-200"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                        useNumpadMapping ? "translate-x-5" : "translate-x-1"
+                      }`}
+                    />
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={(e) => {
+                    setUseFaceCards((v) => !v);
+                    (e.currentTarget as HTMLButtonElement).blur();
+                  }}
+                  className="w-full flex items-center justify-between px-3 py-2 rounded-xl border border-neutral-200 bg-white active:bg-neutral-50 focus:outline-none focus-visible:outline-none"
+                >
+                  <span>Show A / J / Q / K</span>
+                  <span
+                    aria-hidden
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                      useFaceCards ? "bg-neutral-900" : "bg-neutral-200"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+                        useFaceCards ? "translate-x-5" : "translate-x-1"
+                      }`}
+                    />
+                  </span>
+                </button>
+              </div>
             </div>
 
             {/* Steps trail */}
@@ -906,14 +1109,6 @@ export default function Home() {
               </div>
             )}
 
-            {/* Wrong answer */}
-            {wrongAnswer && (
-              <div className="text-center text-sm text-red-500 py-2 px-4">
-                Result is{" "}
-                {ratToString(board.tiles.filter((t) => t.alive)[0].value)}, not{" "}
-                {puzzle.goal}. Undo to try again.
-              </div>
-            )}
           </div>
         )}
       </div>

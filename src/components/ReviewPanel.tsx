@@ -18,6 +18,7 @@ type ReviewPanelProps = {
   solutions: string[];
   solutionsReady: boolean;
   onContinue: () => void;
+  showShortcuts: boolean;
 };
 
 export default function ReviewPanel({
@@ -28,6 +29,7 @@ export default function ReviewPanel({
   solutions,
   solutionsReady,
   onContinue,
+  showShortcuts,
 }: ReviewPanelProps) {
   const skipped = steps.length === 0;
 
@@ -81,7 +83,12 @@ export default function ReviewPanel({
             onClick={onContinue}
             className="w-full max-w-xs h-14 bg-neutral-900 text-white rounded-xl font-medium text-lg active:bg-neutral-700 transition-colors"
           >
-            Continue
+            <div className="flex flex-col items-center justify-center leading-tight">
+              {showShortcuts && (
+                <span className="text-[11px] text-neutral-200">space</span>
+              )}
+              <span>Continue</span>
+            </div>
           </button>
         </div>
 
