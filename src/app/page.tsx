@@ -14,7 +14,7 @@ import {
 } from "@/lib/types";
 import { rat, applyOp, eq, ratToString } from "@/lib/rational";
 import { solve } from "@/lib/solver";
-import { generatePuzzle } from "@/lib/generator";
+import { generatePuzzle, generateSprintPuzzle } from "@/lib/generator";
 import { saveSession } from "@/lib/storage";
 import TopBar from "@/components/TopBar";
 import GoalDisplay from "@/components/GoalDisplay";
@@ -71,6 +71,36 @@ const OP_DISPLAY: Record<Op, string> = {
   "/": "÷",
 };
 
+function SprintInfoHint() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="absolute -right-1 -top-1">
+      <button
+        type="button"
+        aria-label="How sprint targets rotate"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        className="h-5 w-5 rounded-full border border-neutral-300 bg-white text-[10px] text-neutral-500 flex items-center justify-center shadow-sm"
+      >
+        ?
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-2 w-64 rounded-lg bg-white shadow-lg border border-neutral-200 p-3 text-xs text-neutral-600 z-10">
+          <div className="font-semibold mb-1">Balanced sprint scoring</div>
+          <p>
+            In 5-minute sprint, targets rotate between 1–66, 67–133, and 134–200 with 4, 5, then 6 cards.
+            Skipping a puzzle keeps you in the same range, so you can&apos;t hunt for easier targets.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("home");
   const [mode, setMode] = useState<Mode>("practice");
@@ -106,6 +136,8 @@ export default function Home() {
   const bgTaskRef = useRef<{ kind: "solved" | "skipped"; sessionIndex: number } | null>(null);
   const skipDebounceRef = useRef(0);
   const sessionIndexRef = useRef(1);
+  const sprintBandRef = useRef<0 | 1 | 2>(0);
+  const lastSprintOutcomeRef = useRef<"none" | "solved" | "skipped">("none");
   const leaderboardCacheRef = useRef<{ id: number; name: string; score: number; createdAt: number }[] | null>(null);
 
   const QUEUE_TARGET = 4;
@@ -361,10 +393,12 @@ export default function Home() {
       setSprintRemainingMs(SPRINT_DURATION_MS);
       setSprintSessionId(null);
       setSprintPuzzleIdx(null);
+       // Reset sprint rotation state for a new session.
+      sprintBandRef.current = 0;
+      lastSprintOutcomeRef.current = "none";
 
       if (m === "sprint") {
-        const hasCached = puzzleQueueRef.current.length > 0;
-        if (!hasCached) setGenerating(true);
+        setGenerating(true);
         setTimerRunning(false);
         (async () => {
           try {
@@ -378,10 +412,8 @@ export default function Home() {
               throw new Error(data.error || "Failed to start sprint");
             }
 
-            let puzzleForPlay: Puzzle = puzzleQueueRef.current.shift()!;
-            if (!puzzleForPlay) {
-              puzzleForPlay = generatePuzzle();
-            }
+            const band = sprintBandRef.current;
+            const puzzleForPlay: Puzzle = generateSprintPuzzle(band);
 
             const registerRes = await fetch("/api/sprint/register", {
               method: "POST",
@@ -410,7 +442,6 @@ export default function Home() {
             setGenerating(false);
             setTimerRunning(true);
             skipDebounceRef.current = 0;
-            refillPuzzleQueue();
 
             const id = ++solveAbortRef.current;
             if (workerRef.current) {
@@ -613,6 +644,9 @@ export default function Home() {
         setSolved((prev) => [...prev, record]);
         setSolvedCount((prev) => prev + 1);
         setScreen("review");
+        if (mode === "sprint") {
+          lastSprintOutcomeRef.current = "solved";
+        }
         if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
           fetch("/api/sprint/mark", {
             method: "POST",
@@ -666,10 +700,15 @@ export default function Home() {
 
     if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx != null) {
       const nextIdx = sprintPuzzleIdx + 1;
-      // Get the next puzzle immediately (from cache or freshly generated)
-      // so we can show it without waiting for the /api/sprint/register call.
-      let puzzleForPlay: Puzzle | undefined = puzzleQueueRef.current.shift();
-      if (!puzzleForPlay) puzzleForPlay = generatePuzzle();
+
+      // Rotate sprint target/card ranges: 1–66 (4 cards), 67–133 (5 cards), 134–200 (6 cards).
+      // Skipping a puzzle keeps you in the same range for the next one.
+      let band = sprintBandRef.current;
+      if (lastSprintOutcomeRef.current === "solved") {
+        band = ((band + 1) % 3) as 0 | 1 | 2;
+        sprintBandRef.current = band;
+      }
+      const puzzleForPlay: Puzzle = generateSprintPuzzle(band);
 
       setScreen("play");
       const b = makeBoardFromPuzzle(puzzleForPlay);
@@ -685,7 +724,6 @@ export default function Home() {
       setGenerating(false);
       setTimerRunning(true);
       skipDebounceRef.current = 0;
-      refillPuzzleQueue();
 
       // Kick off full solution enumeration for the new puzzle.
       const id = ++solveAbortRef.current;
@@ -700,7 +738,7 @@ export default function Home() {
       } else {
         setTimeout(() => {
           if (solveAbortRef.current !== id) return;
-          const solutions = solve(puzzleForPlay!.cards, puzzleForPlay!.goal);
+          const solutions = solve(puzzleForPlay.cards, puzzleForPlay.goal);
           if (solveAbortRef.current !== id) return;
           setCurrentSolutions(solutions);
           setSolutionsReady(true);
@@ -774,6 +812,9 @@ export default function Home() {
           solutionsPending: !solutionsReady,
         },
       ]);
+    }
+    if (mode === "sprint") {
+      lastSprintOutcomeRef.current = "skipped";
     }
     setScreen("review");
   }, [puzzle, board, mode, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx]);
@@ -904,12 +945,15 @@ export default function Home() {
           >
             Practice
           </button>
-          <button
-            onClick={() => startSession("sprint")}
-            className="h-14 sm:h-16 border-2 border-neutral-900 text-neutral-900 rounded-xl font-medium text-lg sm:text-xl active:bg-neutral-100 transition-colors"
-          >
-            5-Minute Sprint
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => startSession("sprint")}
+              className="w-full h-14 sm:h-16 border-2 border-neutral-900 text-neutral-900 rounded-xl font-medium text-lg sm:text-xl active:bg-neutral-100 transition-colors"
+            >
+              5-Minute Sprint
+            </button>
+            <SprintInfoHint />
+          </div>
           <button
             onClick={() => setScreen("leaderboard")}
             className="h-12 border-2 border-neutral-300 text-neutral-700 rounded-xl font-medium active:bg-neutral-100 transition-colors"

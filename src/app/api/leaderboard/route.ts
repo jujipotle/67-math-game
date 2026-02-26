@@ -6,6 +6,8 @@ import {
   insertLeaderboardEntry,
   listLeaderboardEntries,
   markSprintSubmitted,
+  updateLeaderboardEntry,
+  LeaderboardKind,
 } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -17,9 +19,12 @@ function sanitizeName(raw: string): string | null {
   return name;
 }
 
-export async function GET() {
-  const entries = await listLeaderboardEntries(50);
-  return NextResponse.json({ entries });
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const kindParam = url.searchParams.get("kind");
+  const kind: LeaderboardKind = kindParam === "old" ? "old" : "new";
+  const entries = await listLeaderboardEntries(50, kind);
+  return NextResponse.json({ entries, kind });
 }
 
 export async function POST(req: Request) {
@@ -40,7 +45,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "name not allowed" }, { status: 400 });
   }
 
-  const id = await insertLeaderboardEntry(name, session.solved, Date.now());
+  // New submissions always go to the "new" balanced sprint leaderboard.
+  const id = await insertLeaderboardEntry(name, session.solved, Date.now(), "new");
   await markSprintSubmitted(sessionId);
 
   return NextResponse.json({ ok: true, id, score: session.solved });
@@ -72,6 +78,53 @@ export async function DELETE(req: Request) {
   if (!deleted) {
     return NextResponse.json({ error: "entry not found" }, { status: 404 });
   }
+  return NextResponse.json({ ok: true });
+}
+
+/**
+ * PATCH: Edit a leaderboard entry (admin only).
+ * Body: { adminKey: string, id: number, name: string, score: number, kind: "old" | "new" }
+ */
+export async function PATCH(req: Request) {
+  const adminKey = process.env.LEADERBOARD_ADMIN_KEY;
+  if (!adminKey) {
+    return NextResponse.json(
+      { error: "leaderboard edit not configured" },
+      { status: 501 }
+    );
+  }
+
+  const body = (await req.json().catch(() => null)) as {
+    adminKey?: string;
+    id?: number;
+    name?: string;
+    score?: number;
+    kind?: LeaderboardKind;
+  } | null;
+
+  if (!body || body.adminKey !== adminKey) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  const id = typeof body.id === "number" ? body.id : NaN;
+  const nameRaw = body.name ?? "";
+  const name = sanitizeName(nameRaw);
+  const score = typeof body.score === "number" ? body.score : NaN;
+  const kind = body.kind === "old" || body.kind === "new" ? body.kind : undefined;
+
+  if (!Number.isInteger(id) || id < 1 || !name || !Number.isInteger(score) || !kind) {
+    return NextResponse.json({ error: "invalid request" }, { status: 400 });
+  }
+
+  if (containsBlockedTerm(name)) {
+    return NextResponse.json({ error: "name not allowed" }, { status: 400 });
+  }
+
+  const updated = await updateLeaderboardEntry({ id, name, score, kind });
+  if (!updated) {
+    return NextResponse.json({ error: "entry not found" }, { status: 404 });
+  }
+
   return NextResponse.json({ ok: true });
 }
 

@@ -36,14 +36,15 @@ export default function LeaderboardView({ onBack, initialEntries }: LeaderboardV
   const [loading, setLoading] = useState(!initialEntries?.length);
   const [error, setError] = useState<string | null>(null);
   const [expandedRank, setExpandedRank] = useState<number | null>(null);
+  const [kind, setKind] = useState<"new" | "old">("new");
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        if (!initialEntries?.length) setLoading(true);
+        setLoading(true);
         setError(null);
-        const res = await fetch("/api/leaderboard", { cache: "no-store" });
+        const res = await fetch(`/api/leaderboard?kind=${kind}`, { cache: "no-store" });
         const data = (await res.json()) as { entries?: Entry[]; error?: string };
         if (!res.ok) throw new Error(data.error || "Failed to load leaderboard");
         if (!cancelled) setEntries(data.entries ?? []);
@@ -56,7 +57,7 @@ export default function LeaderboardView({ onBack, initialEntries }: LeaderboardV
     return () => {
       cancelled = true;
     };
-  }, [initialEntries?.length]);
+  }, [kind]);
 
   const tiers = groupByScore(entries);
 
@@ -70,7 +71,32 @@ export default function LeaderboardView({ onBack, initialEntries }: LeaderboardV
     >
       <div className="flex flex-col items-center px-5 max-w-md mx-auto w-full flex-1 min-h-0">
         <div className="text-3xl font-bold mb-1">Leaderboard</div>
-        <div className="text-neutral-500 text-sm mb-4">5-Minute Sprint</div>
+        <div className="text-neutral-500 text-sm mb-2">5-Minute Sprint</div>
+
+        <div className="inline-flex mb-4 rounded-xl border border-neutral-200 bg-neutral-50 p-0.5 text-xs">
+          <button
+            type="button"
+            onClick={() => setKind("new")}
+            className={`px-3 py-1.5 rounded-lg transition-colors ${
+              kind === "new"
+                ? "bg-neutral-900 text-white"
+                : "text-neutral-600 hover:bg-neutral-100"
+            }`}
+          >
+            New (balanced)
+          </button>
+          <button
+            type="button"
+            onClick={() => setKind("old")}
+            className={`px-3 py-1.5 rounded-lg transition-colors ${
+              kind === "old"
+                ? "bg-neutral-900 text-white"
+                : "text-neutral-600 hover:bg-neutral-100"
+            }`}
+          >
+            Old
+          </button>
+        </div>
 
         <button
           onClick={onBack}

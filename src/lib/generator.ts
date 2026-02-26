@@ -47,3 +47,39 @@ export function generatePuzzle(): Puzzle {
 
   return FALLBACK;
 }
+
+/**
+ * Generate a puzzle whose target is constrained to a specific band for sprint mode.
+ * Band 0: 1–66  (4 cards)
+ * Band 1: 67–133 (5 cards)
+ * Band 2: 134–200 (6 cards)
+ */
+export function generateSprintPuzzle(band: 0 | 1 | 2): Puzzle {
+  const bands: [number, number][] = [
+    [1, 66],
+    [67, 133],
+    [134, 200],
+  ];
+  const [minGoal, maxGoal] = bands[band] ?? bands[0];
+
+  for (let goalAttempt = 0; goalAttempt < 10; goalAttempt++) {
+    const span = maxGoal - minGoal + 1;
+    const goal = minGoal + Math.floor(Math.random() * span);
+    const n = cardCount(goal);
+
+    for (
+      let shuffleAttempt = 0;
+      shuffleAttempt < MAX_SHUFFLE_ATTEMPTS_PER_GOAL;
+      shuffleAttempt++
+    ) {
+      const shuffled = shuffle(DECK);
+      const cards = shuffled.slice(0, n);
+
+      if (hasSolution(cards, goal)) {
+        return { goal, cards, n };
+      }
+    }
+  }
+
+  return FALLBACK;
+}

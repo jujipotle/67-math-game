@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 
+export type LeaderboardKind = "old" | "new";
+
 export type LeaderboardEntry = {
   id: number;
   name: string;
   score: number;
   createdAt: number;
+  kind: LeaderboardKind;
 };
 
 export type SprintSessionRow = {
@@ -28,7 +31,8 @@ async function initNeonSchema(
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
       score INTEGER NOT NULL,
-      "createdAt" BIGINT NOT NULL
+      "createdAt" BIGINT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'old'
     )
   `;
   await sql`
@@ -40,6 +44,15 @@ async function initNeonSchema(
       submitted INTEGER NOT NULL DEFAULT 0
     )
   `;
+  // Backfill kind column on existing Neon databases that predate it.
+  try {
+    await sql`
+      ALTER TABLE leaderboard_entries
+      ADD COLUMN kind TEXT NOT NULL DEFAULT 'old'
+    `;
+  } catch {
+    // Column already exists – ignore.
+  }
   await sql`
     CREATE TABLE IF NOT EXISTS sprint_puzzles (
       "sessionId" TEXT NOT NULL,
@@ -138,33 +151,38 @@ export async function markSprintSubmitted(id: string): Promise<void> {
 export async function insertLeaderboardEntry(
   name: string,
   score: number,
-  createdAt: number
+  createdAt: number,
+  kind: LeaderboardKind
 ): Promise<number> {
   if (useNeon) {
     const sql = await getNeon();
     const rows = await sql`
-      INSERT INTO leaderboard_entries (name, score, "createdAt")
-      VALUES (${name}, ${score}, ${createdAt})
+      INSERT INTO leaderboard_entries (name, score, "createdAt", kind)
+      VALUES (${name}, ${score}, ${createdAt}, ${kind})
       RETURNING id
     `;
     const r = rows[0] as { id: number | string };
     return Number(r?.id ?? 0);
   }
-  return Promise.resolve(sqliteInsertLeaderboardEntry(name, score, createdAt));
+  return Promise.resolve(sqliteInsertLeaderboardEntry(name, score, createdAt, kind));
 }
 
-export async function listLeaderboardEntries(limit: number): Promise<LeaderboardEntry[]> {
+export async function listLeaderboardEntries(
+  limit: number,
+  kind: LeaderboardKind
+): Promise<LeaderboardEntry[]> {
   if (useNeon) {
     const sql = await getNeon();
     const rows = await sql`
-      SELECT id, name, score, "createdAt" as "createdAt"
+      SELECT id, name, score, "createdAt" as "createdAt", kind
       FROM leaderboard_entries
+      WHERE kind = ${kind}
       ORDER BY score DESC, "createdAt" ASC
       LIMIT ${limit}
     `;
     return rows as LeaderboardEntry[];
   }
-  return Promise.resolve(sqliteListLeaderboardEntries(limit));
+  return Promise.resolve(sqliteListLeaderboardEntries(limit, kind));
 }
 
 export async function deleteLeaderboardEntry(id: number): Promise<boolean> {
@@ -174,6 +192,26 @@ export async function deleteLeaderboardEntry(id: number): Promise<boolean> {
     return Array.isArray(rows) && rows.length > 0;
   }
   return Promise.resolve(sqliteDeleteLeaderboardEntry(id));
+}
+
+export async function updateLeaderboardEntry(params: {
+  id: number;
+  name: string;
+  score: number;
+  kind: LeaderboardKind;
+}): Promise<boolean> {
+  const { id, name, score, kind } = params;
+  if (useNeon) {
+    const sql = await getNeon();
+    const rows = await sql`
+      UPDATE leaderboard_entries
+      SET name = ${name}, score = ${score}, kind = ${kind}
+      WHERE id = ${id}
+      RETURNING id
+    `;
+    return Array.isArray(rows) && rows.length > 0;
+  }
+  return Promise.resolve(sqliteUpdateLeaderboardEntry({ id, name, score, kind }));
 }
 
 export async function upsertSprintPuzzle(params: {
@@ -277,7 +315,8 @@ function getSqliteDb(): Database.Database {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       score INTEGER NOT NULL,
-      createdAt INTEGER NOT NULL
+      createdAt INTEGER NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'old'
     );
     CREATE TABLE IF NOT EXISTS sprint_sessions (
       id TEXT PRIMARY KEY,
@@ -297,6 +336,14 @@ function getSqliteDb(): Database.Database {
       PRIMARY KEY (sessionId, idx)
     );
   `);
+  // Backfill kind column on existing SQLite databases that predate it.
+  try {
+    sqliteDb.exec(
+      `ALTER TABLE leaderboard_entries ADD COLUMN kind TEXT NOT NULL DEFAULT 'old';`
+    );
+  } catch {
+    // Ignore if the column already exists.
+  }
   return sqliteDb;
 }
 
@@ -336,24 +383,47 @@ function sqliteMarkSprintSubmitted(id: string): void {
   getSqliteDb().prepare(`UPDATE sprint_sessions SET submitted = 1 WHERE id = ?`).run(id);
 }
 
-function sqliteInsertLeaderboardEntry(name: string, score: number, createdAt: number): number {
+function sqliteInsertLeaderboardEntry(
+  name: string,
+  score: number,
+  createdAt: number,
+  kind: LeaderboardKind
+): number {
   const res = getSqliteDb()
-    .prepare(`INSERT INTO leaderboard_entries (name, score, createdAt) VALUES (?, ?, ?)`)
-    .run(name, score, createdAt);
+    .prepare(
+      `INSERT INTO leaderboard_entries (name, score, createdAt, kind) VALUES (?, ?, ?, ?)`
+    )
+    .run(name, score, createdAt, kind);
   return Number(res.lastInsertRowid);
 }
 
-function sqliteListLeaderboardEntries(limit: number): LeaderboardEntry[] {
+function sqliteListLeaderboardEntries(
+  limit: number,
+  kind: LeaderboardKind
+): LeaderboardEntry[] {
   return getSqliteDb()
     .prepare(
-      `SELECT id, name, score, createdAt FROM leaderboard_entries
+      `SELECT id, name, score, createdAt, kind FROM leaderboard_entries
+       WHERE kind = ?
        ORDER BY score DESC, createdAt ASC LIMIT ?`
     )
-    .all(limit) as LeaderboardEntry[];
+    .all(kind, limit) as LeaderboardEntry[];
 }
 
 function sqliteDeleteLeaderboardEntry(id: number): boolean {
   const res = getSqliteDb().prepare(`DELETE FROM leaderboard_entries WHERE id = ?`).run(id);
+  return res.changes > 0;
+}
+
+function sqliteUpdateLeaderboardEntry(params: {
+  id: number;
+  name: string;
+  score: number;
+  kind: LeaderboardKind;
+}): boolean {
+  const res = getSqliteDb()
+    .prepare(`UPDATE leaderboard_entries SET name = ?, score = ?, kind = ? WHERE id = ?`)
+    .run(params.name, params.score, params.kind, params.id);
   return res.changes > 0;
 }
 
