@@ -49,6 +49,16 @@ export function eq(a: Rational, b: Rational): boolean {
   return a.n === b.n && a.d === b.d;
 }
 
+/** Compare: returns -1 if a < b, 0 if a === b, 1 if a > b. */
+export function compare(a: Rational, b: Rational): number {
+  const diff = a.n * b.d - b.n * a.d;
+  return diff < 0n ? -1 : diff > 0n ? 1 : 0;
+}
+
+export function gt(a: Rational, b: Rational): boolean {
+  return compare(a, b) > 0;
+}
+
 export function applyOp(a: Rational, op: Op, b: Rational): Rational | null {
   switch (op) {
     case "+": return add(a, b);
