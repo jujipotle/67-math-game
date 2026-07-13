@@ -16,6 +16,7 @@ export type SprintSessionRow = {
   endsAt: number;
   solved: number;
   submitted: number;
+  band: number;
 };
 
 const useNeon =
@@ -41,7 +42,8 @@ async function initNeonSchema(
       "startedAt" BIGINT NOT NULL,
       "endsAt" BIGINT NOT NULL,
       solved INTEGER NOT NULL,
-      submitted INTEGER NOT NULL DEFAULT 0
+      submitted INTEGER NOT NULL DEFAULT 0,
+      band INTEGER NOT NULL DEFAULT 0
     )
   `;
   // Backfill kind column on existing Neon databases that predate it.
@@ -49,6 +51,16 @@ async function initNeonSchema(
     await sql`
       ALTER TABLE leaderboard_entries
       ADD COLUMN kind TEXT NOT NULL DEFAULT 'old'
+    `;
+  } catch {
+    // Column already exists – ignore.
+  }
+  // Backfill band column on existing Neon databases that predate server-side
+  // sprint puzzle generation.
+  try {
+    await sql`
+      ALTER TABLE sprint_sessions
+      ADD COLUMN band INTEGER NOT NULL DEFAULT 0
     `;
   } catch {
     // Column already exists – ignore.
@@ -93,10 +105,10 @@ export async function createSprintSession(
     const sql = await getNeon();
     const id = randomUUID();
     await sql`
-      INSERT INTO sprint_sessions (id, "startedAt", "endsAt", solved, submitted)
-      VALUES (${id}, ${nowMs}, ${nowMs + durationMs}, 0, 0)
+      INSERT INTO sprint_sessions (id, "startedAt", "endsAt", solved, submitted, band)
+      VALUES (${id}, ${nowMs}, ${nowMs + durationMs}, 0, 0, 0)
     `;
-    return { id, startedAt: nowMs, endsAt: nowMs + durationMs, solved: 0, submitted: 0 };
+    return { id, startedAt: nowMs, endsAt: nowMs + durationMs, solved: 0, submitted: 0, band: 0 };
   }
   return sqliteCreateSprintSession(nowMs, durationMs);
 }
@@ -105,10 +117,10 @@ export async function getSprintSession(id: string): Promise<SprintSessionRow | n
   if (useNeon) {
     const sql = await getNeon();
     const rows = await sql`
-      SELECT id, "startedAt" as "startedAt", "endsAt" as "endsAt", solved, submitted
+      SELECT id, "startedAt" as "startedAt", "endsAt" as "endsAt", solved, submitted, band
       FROM sprint_sessions WHERE id = ${id}
     `;
-    const r = rows[0] as { id: string; startedAt: string; endsAt: string; solved: number; submitted: number } | undefined;
+    const r = rows[0] as { id: string; startedAt: string; endsAt: string; solved: number; submitted: number; band: number } | undefined;
     if (!r) return null;
     return {
       id: r.id,
@@ -116,6 +128,7 @@ export async function getSprintSession(id: string): Promise<SprintSessionRow | n
       endsAt: Number(r.endsAt),
       solved: r.solved,
       submitted: r.submitted,
+      band: Number(r.band ?? 0),
     };
   }
   return Promise.resolve(sqliteGetSprintSession(id));
@@ -146,6 +159,16 @@ export async function markSprintSubmitted(id: string): Promise<void> {
     return;
   }
   sqliteMarkSprintSubmitted(id);
+}
+
+/** Sets the server-authoritative band (0|1|2) used to generate the next puzzle. */
+export async function updateSprintBand(id: string, band: number): Promise<void> {
+  if (useNeon) {
+    const sql = await getNeon();
+    await sql`UPDATE sprint_sessions SET band = ${band} WHERE id = ${id}`;
+    return;
+  }
+  sqliteUpdateSprintBand(id, band);
 }
 
 export async function insertLeaderboardEntry(
@@ -332,7 +355,8 @@ function getSqliteDb(): Database.Database {
       startedAt INTEGER NOT NULL,
       endsAt INTEGER NOT NULL,
       solved INTEGER NOT NULL,
-      submitted INTEGER NOT NULL DEFAULT 0
+      submitted INTEGER NOT NULL DEFAULT 0,
+      band INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS sprint_puzzles (
       sessionId TEXT NOT NULL,
@@ -353,6 +377,15 @@ function getSqliteDb(): Database.Database {
   } catch {
     // Ignore if the column already exists.
   }
+  // Backfill band column on existing SQLite databases that predate server-side
+  // sprint puzzle generation.
+  try {
+    sqliteDb.exec(
+      `ALTER TABLE sprint_sessions ADD COLUMN band INTEGER NOT NULL DEFAULT 0;`
+    );
+  } catch {
+    // Ignore if the column already exists.
+  }
   return sqliteDb;
 }
 
@@ -364,20 +397,25 @@ function sqliteCreateSprintSession(nowMs: number, durationMs: number): SprintSes
     endsAt: nowMs + durationMs,
     solved: 0,
     submitted: 0,
+    band: 0,
   };
   const d = getSqliteDb();
   d.prepare(
-    `INSERT INTO sprint_sessions (id, startedAt, endsAt, solved, submitted)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(row.id, row.startedAt, row.endsAt, row.solved, row.submitted);
+    `INSERT INTO sprint_sessions (id, startedAt, endsAt, solved, submitted, band)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(row.id, row.startedAt, row.endsAt, row.solved, row.submitted, row.band);
   return row;
 }
 
 function sqliteGetSprintSession(id: string): SprintSessionRow | null {
   const row = getSqliteDb()
-    .prepare(`SELECT id, startedAt, endsAt, solved, submitted FROM sprint_sessions WHERE id = ?`)
+    .prepare(`SELECT id, startedAt, endsAt, solved, submitted, band FROM sprint_sessions WHERE id = ?`)
     .get(id) as SprintSessionRow | undefined;
   return row ?? null;
+}
+
+function sqliteUpdateSprintBand(id: string, band: number): void {
+  getSqliteDb().prepare(`UPDATE sprint_sessions SET band = ? WHERE id = ?`).run(band, id);
 }
 
 function sqliteUpdateSprintSolved(id: string, delta: number): void {

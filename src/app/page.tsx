@@ -14,7 +14,7 @@ import {
 } from "@/lib/types";
 import { rat, applyOp, eq, ratToString } from "@/lib/rational";
 import { solve } from "@/lib/solver";
-import { generatePuzzle, generateSprintPuzzle } from "@/lib/generator";
+import { generatePuzzle } from "@/lib/generator";
 import { saveSession } from "@/lib/storage";
 import TopBar from "@/components/TopBar";
 import GoalDisplay from "@/components/GoalDisplay";
@@ -136,8 +136,6 @@ export default function Home() {
   const bgTaskRef = useRef<{ kind: "solved" | "skipped"; sessionIndex: number } | null>(null);
   const skipDebounceRef = useRef(0);
   const sessionIndexRef = useRef(1);
-  const sprintBandRef = useRef<0 | 1 | 2>(0);
-  const lastSprintOutcomeRef = useRef<"none" | "solved" | "skipped">("none");
   const leaderboardCacheRef = useRef<{ id: number; name: string; score: number; createdAt: number }[] | null>(null);
 
   const QUEUE_TARGET = 4;
@@ -393,42 +391,41 @@ export default function Home() {
       setSprintRemainingMs(SPRINT_DURATION_MS);
       setSprintSessionId(null);
       setSprintPuzzleIdx(null);
-       // Reset sprint rotation state for a new session.
-      sprintBandRef.current = 0;
-      lastSprintOutcomeRef.current = "none";
 
       if (m === "sprint") {
         setGenerating(true);
         setTimerRunning(false);
         (async () => {
           try {
+            // The server is the puzzle authority: it creates the session and
+            // issues puzzle #1. The client never sends goal/cards.
             const res = await fetch("/api/sprint/start", { method: "POST" });
             const data = (await res.json()) as {
               sessionId?: string;
               endsAt?: number;
+              idx?: number;
+              goal?: number;
+              cards?: number[];
               error?: string;
             };
-            if (!res.ok || !data.sessionId || data.endsAt == null) {
+            if (
+              !res.ok ||
+              !data.sessionId ||
+              data.endsAt == null ||
+              data.goal == null ||
+              !Array.isArray(data.cards)
+            ) {
               throw new Error(data.error || "Failed to start sprint");
             }
 
-            const band = sprintBandRef.current;
-            const puzzleForPlay: Puzzle = generateSprintPuzzle(band);
-
-            const registerRes = await fetch("/api/sprint/register", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                sessionId: data.sessionId,
-                idx: 1,
-                goal: puzzleForPlay.goal,
-                cards: puzzleForPlay.cards,
-              }),
-            });
-            if (!registerRes.ok) throw new Error("Failed to register puzzle");
+            const puzzleForPlay: Puzzle = {
+              goal: data.goal,
+              cards: data.cards,
+              n: data.cards.length,
+            };
 
             setSprintSessionId(data.sessionId);
-            setSprintPuzzleIdx(1);
+            setSprintPuzzleIdx(data.idx ?? 1);
             setSprintRemainingMs(Math.max(0, data.endsAt - Date.now()));
             const b = makeBoardFromPuzzle(puzzleForPlay);
             setPuzzle(puzzleForPlay);
@@ -644,9 +641,6 @@ export default function Home() {
         setSolved((prev) => [...prev, record]);
         setSolvedCount((prev) => prev + 1);
         setScreen("review");
-        if (mode === "sprint") {
-          lastSprintOutcomeRef.current = "solved";
-        }
         if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
           fetch("/api/sprint/mark", {
             method: "POST",
@@ -699,68 +693,78 @@ export default function Home() {
     }
 
     if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx != null) {
-      const nextIdx = sprintPuzzleIdx + 1;
-
-      // Rotate sprint target/card ranges: 1–66 (4 cards), 67–133 (5 cards), 134–200 (6 cards).
-      // Skipping a puzzle keeps you in the same range for the next one.
-      let band = sprintBandRef.current;
-      if (lastSprintOutcomeRef.current === "solved") {
-        band = ((band + 1) % 3) as 0 | 1 | 2;
-        sprintBandRef.current = band;
-      }
-      const puzzleForPlay: Puzzle = generateSprintPuzzle(band);
-
+      // Ask the server for the next puzzle. The server picks the band (advancing
+      // it only on solves) and generates the goal/cards; the client cannot
+      // influence them. Show the loading state while we wait.
       setScreen("play");
-      const b = makeBoardFromPuzzle(puzzleForPlay);
-      setSprintPuzzleIdx(nextIdx);
-      setPuzzle(puzzleForPlay);
-      setBoard(b);
+      setPuzzle(null);
+      setBoard(null);
       setCurrentSolutions([]);
       setSolutionsReady(false);
       setHistoryStack([]);
       setStepStack([]);
       setSelectedTile(null);
       setSelectedOp(null);
-      setGenerating(false);
-      setTimerRunning(true);
+      setGenerating(true);
+      setTimerRunning(false);
       skipDebounceRef.current = 0;
 
-      // Kick off full solution enumeration for the new puzzle.
-      const id = ++solveAbortRef.current;
-      if (workerRef.current) {
-        workerBusyRef.current = true;
-        workerRef.current.postMessage({
-          type: "solveAll",
-          id,
-          cards: puzzleForPlay.cards,
-          goal: puzzleForPlay.goal,
-        });
-      } else {
-        setTimeout(() => {
-          if (solveAbortRef.current !== id) return;
-          const solutions = solve(puzzleForPlay.cards, puzzleForPlay.goal);
-          if (solveAbortRef.current !== id) return;
-          setCurrentSolutions(solutions);
-          setSolutionsReady(true);
-        }, 0);
-      }
-
-      // Register the puzzle with the sprint session in the background.
       (async () => {
         try {
-          const registerRes = await fetch("/api/sprint/register", {
+          const res = await fetch("/api/sprint/next", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              sessionId: sprintSessionId,
-              idx: nextIdx,
-              goal: puzzleForPlay.goal,
-              cards: puzzleForPlay.cards,
-            }),
+            body: JSON.stringify({ sessionId: sprintSessionId }),
           });
-          if (!registerRes.ok) {
-            // If registration fails, end the sprint gracefully.
+          const data = (await res.json()) as {
+            idx?: number;
+            goal?: number;
+            cards?: number[];
+            endsAt?: number;
+            error?: string;
+          };
+          if (
+            !res.ok ||
+            data.idx == null ||
+            data.goal == null ||
+            !Array.isArray(data.cards)
+          ) {
+            // Session ended or failed – end the sprint gracefully.
             handleQuit();
+            return;
+          }
+
+          const puzzleForPlay: Puzzle = {
+            goal: data.goal,
+            cards: data.cards,
+            n: data.cards.length,
+          };
+
+          const b = makeBoardFromPuzzle(puzzleForPlay);
+          setSprintPuzzleIdx(data.idx);
+          setPuzzle(puzzleForPlay);
+          setBoard(b);
+          setGenerating(false);
+          setTimerRunning(true);
+
+          // Kick off full solution enumeration for the new puzzle.
+          const id = ++solveAbortRef.current;
+          if (workerRef.current) {
+            workerBusyRef.current = true;
+            workerRef.current.postMessage({
+              type: "solveAll",
+              id,
+              cards: puzzleForPlay.cards,
+              goal: puzzleForPlay.goal,
+            });
+          } else {
+            setTimeout(() => {
+              if (solveAbortRef.current !== id) return;
+              const solutions = solve(puzzleForPlay.cards, puzzleForPlay.goal);
+              if (solveAbortRef.current !== id) return;
+              setCurrentSolutions(solutions);
+              setSolutionsReady(true);
+            }, 0);
           }
         } catch {
           handleQuit();
@@ -812,9 +816,6 @@ export default function Home() {
           solutionsPending: !solutionsReady,
         },
       ]);
-    }
-    if (mode === "sprint") {
-      lastSprintOutcomeRef.current = "skipped";
     }
     setScreen("review");
   }, [puzzle, board, mode, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx]);

@@ -2,11 +2,13 @@ import { NextResponse } from "next/server";
 import {
   getSprintPuzzle,
   getSprintSession,
+  updateSprintBand,
   updateSprintEndsAt,
   updateSprintPuzzleStatus,
   updateSprintSolved,
 } from "@/lib/db";
 import { validateFinalExpr } from "@/lib/solver";
+import { nextBand } from "@/lib/sprintServer";
 
 export const runtime = "nodejs";
 
@@ -57,6 +59,8 @@ export async function POST(req: Request) {
     }
     await updateSprintPuzzleStatus({ sessionId, idx, status: "solved", finalExpr });
     await updateSprintSolved(sessionId, 1);
+    // Server-authoritative band rotation: advance on solve, keep on skip.
+    await updateSprintBand(sessionId, nextBand(session.band));
     const remainingAfterMs = Math.max(0, remainingBeforeMs - timeOnPuzzleMs);
     const nextEndsAt = session.startedAt + remainingAfterMs;
     await updateSprintEndsAt(sessionId, nextEndsAt);
