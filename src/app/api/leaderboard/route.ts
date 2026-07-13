@@ -23,6 +23,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const kindParam = url.searchParams.get("kind");
   const kind: LeaderboardKind = kindParam === "old" ? "old" : "new";
+  // Top 50 distinct score tiers, including everyone tied at a qualifying score.
   const entries = await listLeaderboardEntries(50, kind);
   return NextResponse.json({ entries, kind });
 }

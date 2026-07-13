@@ -167,22 +167,31 @@ export async function insertLeaderboardEntry(
   return Promise.resolve(sqliteInsertLeaderboardEntry(name, score, createdAt, kind));
 }
 
+/**
+ * Returns entries in the top `topScores` distinct score tiers (not the top N rows).
+ * All entries tied at a qualifying score are included, so the result may contain
+ * more than `topScores` rows when there are ties.
+ */
 export async function listLeaderboardEntries(
-  limit: number,
+  topScores: number,
   kind: LeaderboardKind
 ): Promise<LeaderboardEntry[]> {
   if (useNeon) {
     const sql = await getNeon();
     const rows = await sql`
-      SELECT id, name, score, "createdAt" as "createdAt", kind
-      FROM leaderboard_entries
-      WHERE kind = ${kind}
+      SELECT id, name, score, "createdAt", kind
+      FROM (
+        SELECT id, name, score, "createdAt", kind,
+               DENSE_RANK() OVER (ORDER BY score DESC) AS rnk
+        FROM leaderboard_entries
+        WHERE kind = ${kind}
+      ) ranked
+      WHERE rnk <= ${topScores}
       ORDER BY score DESC, "createdAt" ASC
-      LIMIT ${limit}
     `;
     return rows as LeaderboardEntry[];
   }
-  return Promise.resolve(sqliteListLeaderboardEntries(limit, kind));
+  return Promise.resolve(sqliteListLeaderboardEntries(topScores, kind));
 }
 
 export async function deleteLeaderboardEntry(id: number): Promise<boolean> {
@@ -398,16 +407,21 @@ function sqliteInsertLeaderboardEntry(
 }
 
 function sqliteListLeaderboardEntries(
-  limit: number,
+  topScores: number,
   kind: LeaderboardKind
 ): LeaderboardEntry[] {
   return getSqliteDb()
     .prepare(
-      `SELECT id, name, score, createdAt, kind FROM leaderboard_entries
-       WHERE kind = ?
-       ORDER BY score DESC, createdAt ASC LIMIT ?`
+      `SELECT id, name, score, createdAt, kind FROM (
+         SELECT id, name, score, createdAt, kind,
+                DENSE_RANK() OVER (ORDER BY score DESC) AS rnk
+         FROM leaderboard_entries
+         WHERE kind = ?
+       )
+       WHERE rnk <= ?
+       ORDER BY score DESC, createdAt ASC`
     )
-    .all(kind, limit) as LeaderboardEntry[];
+    .all(kind, topScores) as LeaderboardEntry[];
 }
 
 function sqliteDeleteLeaderboardEntry(id: number): boolean {
