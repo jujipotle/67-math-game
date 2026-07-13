@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import Link from "next/link";
 import {
   Mode,
   Screen,
@@ -16,6 +17,8 @@ import { rat, applyOp, eq, ratToString } from "@/lib/rational";
 import { solve } from "@/lib/solver";
 import { generatePuzzle } from "@/lib/generator";
 import { saveSession } from "@/lib/storage";
+import { useDataSource } from "@/lib/dataSource";
+import { buildApiUrl } from "@/lib/api";
 import TopBar from "@/components/TopBar";
 import GoalDisplay from "@/components/GoalDisplay";
 import CardGrid from "@/components/CardGrid";
@@ -102,6 +105,7 @@ function SprintInfoHint() {
 }
 
 export default function Home() {
+  const { target, setTarget, isDev } = useDataSource();
   const [screen, setScreen] = useState<Screen>("home");
   const [mode, setMode] = useState<Mode>("practice");
   const [solvedCount, setSolvedCount] = useState(0);
@@ -143,14 +147,14 @@ export default function Home() {
   useEffect(() => {
     if (screen !== "home") return;
     let cancelled = false;
-    fetch("/api/leaderboard", { cache: "no-store" })
+    fetch(buildApiUrl("/api/leaderboard", target), { cache: "no-store" })
       .then((r) => r.json())
       .then((data: { entries?: { id: number; name: string; score: number; createdAt: number }[] }) => {
         if (!cancelled && data?.entries) leaderboardCacheRef.current = data.entries;
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [screen]);
+  }, [screen, target]);
 
   useEffect(() => {
     if (!timerRunning) return;
@@ -399,7 +403,7 @@ export default function Home() {
           try {
             // The server is the puzzle authority: it creates the session and
             // issues puzzle #1. The client never sends goal/cards.
-            const res = await fetch("/api/sprint/start", { method: "POST" });
+            const res = await fetch(buildApiUrl("/api/sprint/start", target), { method: "POST" });
             const data = (await res.json()) as {
               sessionId?: string;
               endsAt?: number;
@@ -468,7 +472,7 @@ export default function Home() {
 
       startNewPuzzle();
     },
-    [startNewPuzzle]
+    [startNewPuzzle, target]
   );
 
   const handleQuit = useCallback(() => {
@@ -488,7 +492,7 @@ export default function Home() {
   const handleTimeUp = useCallback(() => {
     setTimerRunning(false);
     if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
-      fetch("/api/sprint/mark", {
+      fetch(buildApiUrl("/api/sprint/mark", target), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -513,7 +517,7 @@ export default function Home() {
       ]);
     }
     setScreen("review");
-  }, [mode, puzzle, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx]);
+  }, [mode, puzzle, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx, target]);
 
   useEffect(() => {
     if (mode === "sprint" && sprintRemainingMs <= 0 && screen === "play") {
@@ -642,7 +646,7 @@ export default function Home() {
         setSolvedCount((prev) => prev + 1);
         setScreen("review");
         if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
-          fetch("/api/sprint/mark", {
+          fetch(buildApiUrl("/api/sprint/mark", target), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -711,7 +715,7 @@ export default function Home() {
 
       (async () => {
         try {
-          const res = await fetch("/api/sprint/next", {
+          const res = await fetch(buildApiUrl("/api/sprint/next", target), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ sessionId: sprintSessionId }),
@@ -783,7 +787,7 @@ export default function Home() {
     skipDebounceRef.current = now;
     setSkippedCount((c) => c + 1);
     if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
-      fetch("/api/sprint/mark", {
+      fetch(buildApiUrl("/api/sprint/mark", target), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -818,7 +822,7 @@ export default function Home() {
       ]);
     }
     setScreen("review");
-  }, [puzzle, board, mode, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx]);
+  }, [puzzle, board, mode, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx, target]);
 
   const handleHome = () => {
     setScreen("home");
@@ -961,7 +965,43 @@ export default function Home() {
           >
             Leaderboard
           </button>
+          {isDev && (
+            <Link
+              href="/admin"
+              className="h-12 flex items-center justify-center border-2 border-neutral-300 text-neutral-700 rounded-xl font-medium active:bg-neutral-100 transition-colors"
+            >
+              Admin
+            </Link>
+          )}
         </div>
+        {isDev && (
+          <div className="mt-6 flex flex-col items-center gap-2">
+            <span className="text-xs font-medium uppercase tracking-wide text-neutral-400">
+              Data source
+            </span>
+            <div className="inline-flex rounded-xl border border-neutral-200 bg-neutral-50 p-0.5 text-sm">
+              {(["local", "production"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTarget(t)}
+                  className={`px-4 py-1.5 rounded-lg transition-colors ${
+                    target === t
+                      ? "bg-neutral-900 text-white"
+                      : "text-neutral-600 hover:bg-neutral-100"
+                  }`}
+                >
+                  {t === "local" ? "Local" : "Actual"}
+                </button>
+              ))}
+            </div>
+            <span className="text-xs text-neutral-400">
+              {target === "production"
+                ? "Playing & scores hit the live site."
+                : "Playing & scores stay on your machine."}
+            </span>
+          </div>
+        )}
       </div>
     );
   }
@@ -971,6 +1011,7 @@ export default function Home() {
     return (
       <LeaderboardView
         onBack={handleHome}
+        target={target}
         initialEntries={leaderboardCacheRef.current ?? undefined}
       />
     );
@@ -986,6 +1027,7 @@ export default function Home() {
         solved={solved}
         skipped={skipped}
         useFaceCards={useFaceCards}
+        target={target}
         leaderboardSessionId={mode === "sprint" ? sprintSessionId : null}
         solvedCount={solvedCount}
         skippedCount={skippedCount}

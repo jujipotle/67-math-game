@@ -1,13 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { SolvedRecord, SkippedRecord } from "@/lib/types";
+import LeaderboardTable, { LeaderboardEntry } from "@/components/LeaderboardTable";
+import { buildApiUrl } from "@/lib/api";
+import type { DataTarget } from "@/lib/dataSource";
 
 type SummaryViewProps = {
   mode: string;
   solved: SolvedRecord[];
   skipped: SkippedRecord[];
   useFaceCards: boolean;
+  target: DataTarget;
   leaderboardSessionId: string | null;
   solvedCount: number;
   skippedCount: number;
@@ -29,29 +33,13 @@ function formatCard(n: number, useFaceCards: boolean): string {
   return n.toString();
 }
 
-type LbEntry = { id: number; name: string; score: number; createdAt: number };
-
-function groupLbByScore(entries: LbEntry[]): { score: number; entries: LbEntry[] }[] {
-  const sorted = [...entries].sort(
-    (a, b) => b.score - a.score || a.createdAt - b.createdAt
-  );
-  const tiers: { score: number; entries: LbEntry[] }[] = [];
-  for (const e of sorted) {
-    const last = tiers[tiers.length - 1];
-    if (last && last.score === e.score) {
-      last.entries.push(e);
-    } else {
-      tiers.push({ score: e.score, entries: [e] });
-    }
-  }
-  return tiers;
-}
 
 export default function SummaryView({
   mode,
   solved,
   skipped,
   useFaceCards,
+  target,
   leaderboardSessionId,
   solvedCount,
   skippedCount,
@@ -64,47 +52,38 @@ export default function SummaryView({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitOk, setSubmitOk] = useState<{ score: number } | null>(null);
-  const [lbEntries, setLbEntries] = useState<LbEntry[] | null>(null);
+  const [lbEntries, setLbEntries] = useState<LeaderboardEntry[]>([]);
   const [lbError, setLbError] = useState<string | null>(null);
   const [lbLoading, setLbLoading] = useState(false);
-  const [expandedLbRank, setExpandedLbRank] = useState<number | null>(null);
 
   const mins = Math.floor(totalTimeMs / 60000);
   const secs = Math.floor((totalTimeMs % 60000) / 1000);
   const timeStr = `${mins}:${secs.toString().padStart(2, "0")}`;
 
-  useEffect(() => {
-    if (mode !== "sprint" || !leaderboardSessionId) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        setLbLoading(true);
-        setLbError(null);
-        const res = await fetch("/api/leaderboard", { cache: "no-store" });
-        const data = (await res.json().catch(() => ({}))) as {
-          entries?: LbEntry[];
-          error?: string;
-        };
-        if (!res.ok) throw new Error(data.error || "Failed to load leaderboard");
-        if (!cancelled) setLbEntries(data.entries ?? []);
-      } catch (e) {
-        if (!cancelled) setLbError(e instanceof Error ? e.message : "Failed to load leaderboard");
-      } finally {
-        if (!cancelled) setLbLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [mode, leaderboardSessionId]);
-
   const userScore = mode === "sprint" ? solvedCount : 0;
 
-  const lbTiers = lbEntries && lbEntries.length > 0 ? groupLbByScore(lbEntries) : [];
-  const userRank =
-    userScore > 0 && lbTiers.length > 0
-      ? 1 + lbTiers.filter((t) => t.score > userScore).length
-      : null;
+  const loadLeaderboard = useCallback(async () => {
+    try {
+      setLbLoading(true);
+      setLbError(null);
+      const res = await fetch(buildApiUrl("/api/leaderboard", target), { cache: "no-store" });
+      const data = (await res.json().catch(() => ({}))) as {
+        entries?: LeaderboardEntry[];
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error || "Failed to load leaderboard");
+      setLbEntries(data.entries ?? []);
+    } catch (e) {
+      setLbError(e instanceof Error ? e.message : "Failed to load leaderboard");
+    } finally {
+      setLbLoading(false);
+    }
+  }, [target]);
+
+  useEffect(() => {
+    if (mode !== "sprint" || !leaderboardSessionId) return;
+    loadLeaderboard();
+  }, [mode, leaderboardSessionId, loadLeaderboard]);
 
   return (
     <div
@@ -130,12 +109,12 @@ export default function SummaryView({
         </button>
 
         {mode === "sprint" && leaderboardSessionId && (
-          <div className="w-full max-w-xs mb-6">
+          <div className="w-full max-w-md mb-6">
             <div className="text-xs uppercase tracking-widest text-neutral-400 mb-2">
               Leaderboard
             </div>
             {submitOk ? (
-              <div className="text-sm text-neutral-600 mb-2">
+              <div className="text-sm text-neutral-600 mb-3">
                 Submitted. Score: <span className="font-semibold">{submitOk.score}</span>
               </div>
             ) : (
@@ -154,7 +133,7 @@ export default function SummaryView({
                       setSubmitError(null);
                       setSubmitting(true);
                       try {
-                        const res = await fetch("/api/leaderboard", {
+                        const res = await fetch(buildApiUrl("/api/leaderboard", target), {
                           method: "POST",
                           headers: { "Content-Type": "application/json" },
                           body: JSON.stringify({ sessionId: leaderboardSessionId, name: leaderName }),
@@ -164,6 +143,7 @@ export default function SummaryView({
                           throw new Error(data.error || "Failed to submit");
                         }
                         setSubmitOk({ score: data.score });
+                        await loadLeaderboard();
                       } catch (e) {
                         setSubmitError(e instanceof Error ? e.message : "Failed to submit");
                       } finally {
@@ -178,79 +158,18 @@ export default function SummaryView({
                 {submitError && (
                   <div className="text-xs text-red-500 mt-1">{submitError}</div>
                 )}
-                <div className="text-[11px] text-neutral-400 mb-2">
+                <div className="text-[11px] text-neutral-400 mb-4">
                   1–20 chars. Letters, numbers, spaces, _ and -.
                 </div>
               </>
             )}
 
-            {/* Current leaderboard + where you stand */}
-            <div className="mt-2 border-t border-neutral-200 pt-2">
-              {lbLoading ? (
-                <div className="text-xs text-neutral-400">Loading leaderboard…</div>
-              ) : lbError ? (
-                <div className="text-xs text-red-500">{lbError}</div>
-              ) : lbTiers.length > 0 ? (
-                <>
-                  {userScore > 0 && (
-                    <div className="text-xs text-neutral-600 mb-1">
-                      Your score:{" "}
-                      <span className="font-semibold">{userScore}</span>
-                      {userRank != null && (
-                        <>
-                          {" "}
-                          (would be <span className="font-semibold">#{userRank}</span> on this board)
-                        </>
-                      )}
-                    </div>
-                  )}
-                  <div className="space-y-1">
-                    {lbTiers.map((tier, i) => {
-                      const rank = i + 1;
-                      const showNames = rank <= 3;
-                      const isExpanded = showNames || expandedLbRank === rank;
-                      return (
-                        <div key={tier.score * 10000 + i} className="rounded-lg bg-neutral-50 overflow-hidden">
-                          {showNames ? (
-                            <div className="px-3 py-1.5">
-                              <span className="text-xs text-neutral-700 font-medium">
-                                #{rank} — {tier.score}:
-                              </span>{" "}
-                              <span className="text-xs text-neutral-600">
-                                {tier.entries.map((e) => e.name).join(", ")}
-                              </span>
-                            </div>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => setExpandedLbRank(expandedLbRank === rank ? null : rank)}
-                                className="w-full flex items-center justify-between px-3 py-1.5 text-left active:bg-neutral-100"
-                              >
-                                <span className="text-xs text-neutral-700 font-medium">
-                                  #{rank} — {tier.score} ({tier.entries.length}{" "}
-                                  {tier.entries.length === 1 ? "person" : "people"})
-                                </span>
-                                <span className="text-[10px] text-neutral-400">
-                                  {isExpanded ? "▲" : "▼"}
-                                </span>
-                              </button>
-                              {isExpanded && (
-                                <div className="px-3 pb-1.5 text-xs text-neutral-600">
-                                  {tier.entries.map((e) => e.name).join(", ")}
-                                </div>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              ) : (
-                <div className="text-xs text-neutral-400">No entries yet.</div>
-              )}
-            </div>
+            <LeaderboardTable
+              entries={lbEntries}
+              loading={lbLoading}
+              error={lbError}
+              highlightScore={submitOk ? submitOk.score : userScore}
+            />
           </div>
         )}
 

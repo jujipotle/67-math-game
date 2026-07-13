@@ -230,7 +230,7 @@ curl -X PATCH http://localhost:3000/api/leaderboard \
   -d '{"adminKey":"YOUR_KEY","id":3,"name":"Alice","score":12,"kind":"new"}'
 ```
 
-Entry IDs are returned by `GET /api/leaderboard`. The `leaderboard_admin.ipynb` notebook provides a GUI for listing, editing, and deleting entries.
+Entry IDs are returned by `GET /api/leaderboard`. In local development, open [http://localhost:3000/admin](http://localhost:3000/admin) for a GUI to list, edit, and delete entries. Which database it targets (local or production) is controlled by the single **Data source** toggle on the home screen. The admin page and `/api/dev-proxy/*` route return 404 on the deployed site.
 
 ---
 
@@ -433,12 +433,27 @@ Primary key: `(sessionId, idx)`.
 
 ## Environment variables
 
+### Local (`.env` file)
+
+Copy `.env.example` → `.env`. You only need two values for day-to-day local work:
+
+| Variable | Required locally? | Purpose |
+|---|---|---|
+| `LEADERBOARD_ADMIN_KEY` | For `/admin` page | Secret injected server-side by `/api/dev-proxy` (dev only) |
+| `LEADERBOARD_BLOCKED_TERMS` | Optional | Name blocklist (same list you'd use in production) |
+| `DATABASE_URL` | **Leave unset** | Unset = SQLite at `data/leaderboard.db`. Only set if you intentionally want local dev on production Neon. |
+
+**Data source toggle:** run `npm run dev`, and on the home screen use the single **Local** / **Actual** toggle to choose which database everything reads and writes — playing the game, the leaderboard, and the `/admin` page all follow it. In dev, "Actual" requests are forwarded to the live site through `/api/dev-proxy/*` (which injects the admin key server-side). The toggle is hidden on the live Vercel deployment, where there is only one database.
+
+### Production (Vercel dashboard only)
+
+Vercel does **not** read your local `.env`. Set these in **Vercel → Settings → Environment Variables**:
+
 | Variable | Required | Purpose |
 |---|---|---|
-| `DATABASE_URL` or `POSTGRES_URL` | Production | Neon Postgres connection string. If unset, SQLite is used. |
-| `LEADERBOARD_BLOCKED_TERMS` | Production recommended | Comma- or newline-separated blocklist for leaderboard names. Unset = no blocking. |
-| `LEADERBOARD_ADMIN_KEY` | Optional | Enables admin DELETE/PATCH on leaderboard entries. |
-| `LEADERBOARD_BASE_URL` | Optional | Base URL for `leaderboard_admin.ipynb` (default `http://localhost:3000`). |
+| `DATABASE_URL` | Yes | Neon Postgres connection string |
+| `LEADERBOARD_BLOCKED_TERMS` | Recommended | Offensive name blocklist |
+| `LEADERBOARD_ADMIN_KEY` | Recommended | Must match the key in your local `.env` if you edit production from the local `/admin` page (Data source = Actual) |
 
 ---
 
@@ -486,7 +501,6 @@ npm start
 | `postcss.config.mjs` | PostCSS config for Tailwind CSS 4 |
 | `eslint.config.mjs` | ESLint configuration |
 | `.gitignore` | Ignores `node_modules`, `.next`, `data/`, `.env*`, etc. |
-| `leaderboard_admin.ipynb` | Jupyter notebook for admin leaderboard management via the API |
 
 ### `public/`
 
@@ -500,6 +514,7 @@ npm start
 | File | Purpose |
 |---|---|
 | `page.tsx` | Main application: all screens, game state, timers, keyboard shortcuts, API calls, worker management |
+| `admin/page.tsx` | Dev-only leaderboard admin UI (`/admin`; disabled on production) |
 | `layout.tsx` | Root layout, fonts (Geist), metadata, PWA config, Vercel Analytics |
 | `globals.css` | Global styles, Tailwind import, safe-area CSS variables |
 | `icon.tsx` | Dynamic favicon generation (Next.js metadata route) |
@@ -509,10 +524,12 @@ npm start
 
 | File | Purpose |
 |---|---|
-| `sprint/start/route.ts` | `POST` — create sprint session |
-| `sprint/register/route.ts` | `POST` — register a puzzle for a session |
+| `sprint/start/route.ts` | `POST` — create sprint session and issue puzzle #1 |
+| `sprint/next/route.ts` | `POST` — issue next server-generated puzzle |
+| `sprint/register/route.ts` | `POST` — disabled (`410`); puzzles are server-generated |
 | `sprint/mark/route.ts` | `POST` — mark puzzle solved or skipped |
 | `leaderboard/route.ts` | `GET` / `POST` / `DELETE` / `PATCH` — leaderboard CRUD |
+| `dev-proxy/[...path]/route.ts` | Dev-only proxy that routes any API call to the local or live database based on the home-screen toggle (`404` in production) |
 
 ### `src/components/` — UI components
 
@@ -524,7 +541,8 @@ npm start
 | `OpRow.tsx` | Operator button row (`+ − × ÷`) |
 | `ReviewPanel.tsx` | Post-puzzle review: player expression, all solutions, continue/skip |
 | `SummaryView.tsx` | End-of-session summary with solve/skip history and leaderboard submit form |
-| `LeaderboardView.tsx` | Leaderboard display with score-tier grouping and new/old toggle |
+| `LeaderboardView.tsx` | Leaderboard display (score / players table) |
+| `LeaderboardTable.tsx` | Shared leaderboard table used by home and sprint summary |
 
 ### `src/lib/` — Core logic
 
@@ -537,6 +555,8 @@ npm start
 | `db.ts` | Database abstraction (Neon + SQLite), schema init, all persistence operations |
 | `storage.ts` | Practice session persistence in `localStorage` |
 | `blocklist.ts` | Env-driven offensive-name filter with normalization |
+| `dataSource.tsx` | React context for the dev-only Local/Actual data-source toggle (persisted to `localStorage`) |
+| `api.ts` | `buildApiUrl()` — routes API calls to local or production via the dev proxy |
 
 ### `src/workers/`
 
