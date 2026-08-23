@@ -31,8 +31,17 @@ import MultiplayerHub from "@/components/MultiplayerHub";
 import RoomLobby from "@/components/RoomLobby";
 import RoomResults from "@/components/RoomResults";
 import RoomWaiting from "@/components/RoomWaiting";
-import ConfirmSheet from "@/components/ConfirmSheet";
 import { clearMpSeat, loadMpSeat, saveMpSeat } from "@/lib/mpSeat";
+import {
+  cardIndexFromCode,
+  isSkipKey,
+  isUndoKey,
+  opFromCode,
+  SKIP_KEY,
+  UNDO_KEY,
+} from "@/lib/keyboardShortcuts";
+
+const NUMPAD_PREF_KEY = "useNumpadForCards";
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted || ms <= 0) return Promise.resolve();
@@ -157,6 +166,7 @@ export default function Home() {
   const [selectedOp, setSelectedOp] = useState<Op | null>(null);
   const [useFaceCards, setUseFaceCards] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [numpadCardLayout, setNumpadCardLayout] = useState(false);
   const [sprintSessionId, setSprintSessionId] = useState<string | null>(null);
   const [sprintPuzzleIdx, setSprintPuzzleIdx] = useState<number | null>(null);
   const [playElapsedMs, setPlayElapsedMs] = useState(0);
@@ -183,7 +193,6 @@ export default function Home() {
   const [waitingPractice, setWaitingPractice] = useState(false);
   const [mpStarting, setMpStarting] = useState(false);
   const [mpHostLeaveOpen, setMpHostLeaveOpen] = useState(false);
-  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
   const [mpEndConfirmOpen, setMpEndConfirmOpen] = useState(false);
   const [mpEnding, setMpEnding] = useState(false);
   const [mpWaitIdle, setMpWaitIdle] = useState(false);
@@ -202,6 +211,23 @@ export default function Home() {
   const mpSyncRef = useRef("");
 
   const QUEUE_TARGET = 4;
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(NUMPAD_PREF_KEY);
+      if (saved === "1") setNumpadCardLayout(true);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(NUMPAD_PREF_KEY, numpadCardLayout ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [numpadCardLayout]);
 
   useEffect(() => {
     if (screen !== "home") return;
@@ -607,7 +633,6 @@ export default function Home() {
     waitingPracticeRef.current = false;
     setMpStarting(false);
     setMpHostLeaveOpen(false);
-    setLeaveConfirmOpen(false);
     setMpEndConfirmOpen(false);
     setMpEnding(false);
     setMpWaitIdle(false);
@@ -1064,7 +1089,6 @@ export default function Home() {
     mpRoom.players.some((p) => p.id && p.id !== mpRoom.you.playerId);
 
   const finishSoloSession = useCallback(() => {
-    setLeaveConfirmOpen(false);
     setTimerRunning(false);
     setScreen("summary");
 
@@ -1078,8 +1102,8 @@ export default function Home() {
     });
   }, [mode, playElapsedMs, sprintRemainingMs, solved]);
 
-  const confirmLeave = useCallback(() => {
-    setLeaveConfirmOpen(false);
+  const handleQuit = useCallback(() => {
+    if (mpHostLeaveOpen) return;
     if (mpPlayerIdRef.current) {
       if (hostNeedsSuccessor) {
         setMpHostLeaveOpen(true);
@@ -1089,16 +1113,7 @@ export default function Home() {
       return;
     }
     finishSoloSession();
-  }, [mpLeave, hostNeedsSuccessor, finishSoloSession]);
-
-  const handleQuit = useCallback(() => {
-    if (mpHostLeaveOpen) return;
-    if (leaveConfirmOpen) {
-      confirmLeave();
-      return;
-    }
-    setLeaveConfirmOpen(true);
-  }, [mpHostLeaveOpen, leaveConfirmOpen, confirmLeave]);
+  }, [mpHostLeaveOpen, mpLeave, hostNeedsSuccessor, finishSoloSession]);
 
   const handleTimeUp = useCallback(() => {
     setTimerRunning(false);
@@ -1296,15 +1311,6 @@ export default function Home() {
     setSelectedOp(null);
   };
 
-  const handleReset = () => {
-    if (!puzzle) return;
-    setBoard(makeBoardFromPuzzle(puzzle));
-    setHistoryStack([]);
-    setStepStack([]);
-    setSelectedTile(null);
-    setSelectedOp(null);
-  };
-
   const handleContinue = () => {
     if (mode === "sprint" && sprintRemainingMs <= 0) {
       finishSoloSession();
@@ -1465,31 +1471,21 @@ export default function Home() {
       }
 
       const rawKey = e.key;
-      const key = rawKey.toLowerCase();
 
-      // Global quit from play/review/wait: Escape
-      if (
-        (screen === "play" || screen === "review" || screen === "mp-wait") &&
-        (rawKey === "Escape" || key === "escape")
-      ) {
-        e.preventDefault();
-        if (mpHostLeaveOpen) {
+      if (mpHostLeaveOpen) {
+        if (rawKey === "Escape") {
+          e.preventDefault();
           setMpHostLeaveOpen(false);
-          return;
         }
-        if (mpEndConfirmOpen) {
-          setMpEndConfirmOpen(false);
-          return;
-        }
-        if (leaveConfirmOpen) {
-          confirmLeave();
-          return;
-        }
-        setLeaveConfirmOpen(true);
         return;
       }
-
-      if (leaveConfirmOpen || mpHostLeaveOpen || mpEndConfirmOpen) return;
+      if (mpEndConfirmOpen) {
+        if (rawKey === "Escape") {
+          e.preventDefault();
+          setMpEndConfirmOpen(false);
+        }
+        return;
+      }
 
       // Review: space = Continue
       if (screen === "review" && rawKey === " ") {
@@ -1500,66 +1496,35 @@ export default function Home() {
 
       if (screen !== "play") return;
 
-      const code = e.code;
-
-      // Card selection via physical keys (event.code):
-      // Main keyboard: 1–3 top row, Q/W/E bottom row.
-      // Numpad: 4–6 top row, 1–3 bottom row (unchanged).
-      const tileByCode: Record<string, number> = {
-        Digit1: 0,
-        Digit2: 1,
-        Digit3: 2,
-        KeyQ: 3,
-        KeyW: 4,
-        KeyE: 5,
-        Numpad4: 0,
-        Numpad5: 1,
-        Numpad6: 2,
-        Numpad1: 3,
-        Numpad2: 4,
-        Numpad3: 5,
-      };
-      if (code in tileByCode) {
-        if (!board) return;
-        const index = tileByCode[code];
-        if (index < 0 || index >= board.tiles.length) return;
-        if (!board.tiles[index].alive) return;
-        e.preventDefault();
-        handleTileClick(index);
-        return;
-      }
-
-      // Ops: a=+, s=−, d=×, f=÷ (letter keys; numpad ops unchanged — none bound)
-      if (code === "KeyA") {
-        e.preventDefault();
-        handleOpClick("+");
-        return;
-      }
-      if (code === "KeyS") {
-        e.preventDefault();
-        handleOpClick("-");
-        return;
-      }
-      if (code === "KeyD") {
-        e.preventDefault();
-        handleOpClick("*");
-        return;
-      }
-      if (code === "KeyF") {
-        e.preventDefault();
-        handleOpClick("/");
-        return;
-      }
-
-      // Actions: z=undo, x=reset
-      if (code === "KeyZ") {
+      if (isUndoKey(rawKey)) {
         e.preventDefault();
         handleUndo();
         return;
       }
-      if (code === "KeyX") {
+
+      if (isSkipKey(rawKey)) {
+        if (mode === "multiplayer") return;
         e.preventDefault();
-        handleReset();
+        handleSkip();
+        return;
+      }
+
+      const code = e.code;
+
+      const tileIndex = cardIndexFromCode(code, numpadCardLayout);
+      if (tileIndex != null) {
+        if (!board) return;
+        if (tileIndex < 0 || tileIndex >= board.tiles.length) return;
+        if (!board.tiles[tileIndex].alive) return;
+        e.preventDefault();
+        handleTileClick(tileIndex);
+        return;
+      }
+
+      const op = opFromCode(code);
+      if (op) {
+        e.preventDefault();
+        handleOpClick(op);
         return;
       }
 
@@ -1567,7 +1532,7 @@ export default function Home() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [screen, board, handleQuit, handleTileClick, handleOpClick, handleUndo, handleReset, handleContinue, leaveConfirmOpen, mpHostLeaveOpen, mpEndConfirmOpen, confirmLeave]);
+  }, [screen, board, mode, numpadCardLayout, handleTileClick, handleOpClick, handleUndo, handleSkip, handleContinue, mpHostLeaveOpen, mpEndConfirmOpen]);
 
   const timerDisplay =
     mode === "practice" && !waitingPractice
@@ -1660,19 +1625,6 @@ export default function Home() {
 
   const sessionLeaveUi = (
     <>
-      {leaveConfirmOpen && (
-        <ConfirmSheet
-          title={mpPlayerId ? "Leave?" : "Quit?"}
-          body={
-            mpPlayerId
-              ? "You'll leave this room."
-              : "Your session will end and you'll see your summary."
-          }
-          confirmLabel={mpPlayerId ? "Leave" : "Quit"}
-          onConfirm={confirmLeave}
-          onCancel={() => setLeaveConfirmOpen(false)}
-        />
-      )}
       {mpHostLeaveOpen && mpRoom && (
         <div
           className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-30"
@@ -2069,6 +2021,7 @@ export default function Home() {
               onTileClick={handleTileClick}
               useFaceCards={useFaceCards}
               showShortcuts={showShortcuts}
+              numpadCardLayout={numpadCardLayout}
               highlightWrong={wrongAnswer}
             />
 
@@ -2089,20 +2042,9 @@ export default function Home() {
               >
                 <div className="flex flex-col items-center justify-center leading-tight">
                   {showShortcuts && (
-                    <span className="text-[11px] text-neutral-400">Z</span>
+                    <span className="text-[11px] text-neutral-400">{UNDO_KEY}</span>
                   )}
                   <span>Undo</span>
-                </div>
-              </button>
-              <button
-                onClick={handleReset}
-                className="flex-1 min-w-0 h-16 text-base sm:text-lg font-medium rounded-xl border-2 border-neutral-200 text-neutral-500 active:bg-neutral-100 transition-colors"
-              >
-                <div className="flex flex-col items-center justify-center leading-tight">
-                  {showShortcuts && (
-                    <span className="text-[11px] text-neutral-400">X</span>
-                  )}
-                  <span>Reset</span>
                 </div>
               </button>
               {mode !== "multiplayer" && (
@@ -2111,6 +2053,9 @@ export default function Home() {
                 className="flex-1 min-w-0 h-16 text-base sm:text-lg font-medium rounded-xl border-2 border-neutral-300 text-neutral-600 active:bg-neutral-100 transition-colors"
               >
                 <div className="flex flex-col items-center justify-center leading-tight">
+                  {showShortcuts && (
+                    <span className="text-[11px] text-neutral-400">{SKIP_KEY}</span>
+                  )}
                   <span className="text-sm sm:text-base">
                     {mode === "sprint" ? "Skip (-20 sec)" : "Skip"}
                   </span>
@@ -2150,21 +2095,21 @@ export default function Home() {
                   type="button"
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={(e) => {
-                    setUseFaceCards((v) => !v);
+                    setNumpadCardLayout((v) => !v);
                     (e.currentTarget as HTMLButtonElement).blur();
                   }}
                   className="w-full flex items-center justify-between px-3 py-2 rounded-xl border border-neutral-200 bg-white active:bg-neutral-50 focus:outline-none focus-visible:outline-none"
                 >
-                  <span>Show A / J / Q / K</span>
+                  <span>Numpad layout for card shortcuts</span>
                   <span
                     aria-hidden
                     className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                      useFaceCards ? "bg-neutral-900" : "bg-neutral-200"
+                      numpadCardLayout ? "bg-neutral-900" : "bg-neutral-200"
                     }`}
                   >
                     <span
                       className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                        useFaceCards ? "translate-x-5" : "translate-x-1"
+                        numpadCardLayout ? "translate-x-5" : "translate-x-1"
                       }`}
                     />
                   </span>

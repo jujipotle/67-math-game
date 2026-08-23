@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { RoomStateView } from "@/lib/types";
-import ConfirmSheet from "@/components/ConfirmSheet";
 import RoundLengthField from "@/components/RoundLengthField";
 
 type RoomLobbyProps = {
@@ -33,7 +32,6 @@ export default function RoomLobby({
 }: RoomLobbyProps) {
   const [copied, setCopied] = useState(false);
   const [pickingHost, setPickingHost] = useState(false);
-  const [leaveConfirm, setLeaveConfirm] = useState(false);
   const isHost = room.you.isHost;
   const others = room.players.filter((p) => p.id && p.id !== room.you.playerId);
 
@@ -47,23 +45,14 @@ export default function RoomLobby({
     }
   };
 
-  const confirmLeave = useCallback(() => {
-    setLeaveConfirm(false);
+  const handleLeave = useCallback(() => {
+    if (pickingHost) return;
     if (isHost && others.length > 0) {
       setPickingHost(true);
       return;
     }
     onLeave();
-  }, [isHost, others.length, onLeave]);
-
-  const requestLeave = () => {
-    if (pickingHost) return;
-    if (leaveConfirm) {
-      confirmLeave();
-      return;
-    }
-    setLeaveConfirm(true);
-  };
+  }, [pickingHost, isHost, others.length, onLeave]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -71,21 +60,13 @@ export default function RoomLobby({
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) {
         return;
       }
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || !pickingHost) return;
       e.preventDefault();
-      if (pickingHost) {
-        setPickingHost(false);
-        return;
-      }
-      if (leaveConfirm) {
-        confirmLeave();
-        return;
-      }
-      setLeaveConfirm(true);
+      setPickingHost(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [pickingHost, leaveConfirm, confirmLeave]);
+  }, [pickingHost]);
 
   return (
     <div
@@ -165,22 +146,12 @@ export default function RoomLobby({
 
         <button
           type="button"
-          onClick={requestLeave}
+          onClick={handleLeave}
           className="w-full h-12 rounded-xl border-2 border-neutral-300 text-neutral-600 font-medium"
         >
           Leave room
         </button>
       </div>
-
-      {leaveConfirm && (
-        <ConfirmSheet
-          title="Leave?"
-          body="You'll leave this room."
-          confirmLabel="Leave"
-          onConfirm={confirmLeave}
-          onCancel={() => setLeaveConfirm(false)}
-        />
-      )}
 
       {pickingHost && (
         <div

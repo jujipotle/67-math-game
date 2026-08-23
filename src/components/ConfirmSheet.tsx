@@ -5,6 +5,7 @@ type ConfirmSheetProps = {
   body?: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  showConfirmShortcut?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 };
@@ -14,6 +15,7 @@ export default function ConfirmSheet({
   body,
   confirmLabel = "Quit",
   cancelLabel = "Resume",
+  showConfirmShortcut = true,
   onConfirm,
   onCancel,
 }: ConfirmSheetProps) {
@@ -35,7 +37,9 @@ export default function ConfirmSheet({
         >
           <span className="inline-flex items-center justify-center gap-1.5 leading-tight">
             <span>{confirmLabel}</span>
-            <span className="text-[11px] text-neutral-400">(esc)</span>
+            {showConfirmShortcut ? (
+              <span className="text-[11px] text-neutral-400">(esc)</span>
+            ) : null}
           </span>
         </button>
         <button

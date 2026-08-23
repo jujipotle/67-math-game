@@ -2,6 +2,7 @@
 
 import { Tile } from "@/lib/types";
 import { ratToString } from "@/lib/rational";
+import { cardShortcutLabels } from "@/lib/keyboardShortcuts";
 
 type CardGridProps = {
   tiles: Tile[];
@@ -9,10 +10,9 @@ type CardGridProps = {
   onTileClick: (index: number) => void;
   useFaceCards: boolean;
   showShortcuts: boolean;
+  numpadCardLayout: boolean;
   highlightWrong?: boolean;
 };
-
-const KEYBOARD_HINTS = ["1", "2", "3", "Q", "W", "E"];
 
 export default function CardGrid({
   tiles,
@@ -20,13 +20,15 @@ export default function CardGrid({
   onTileClick,
   useFaceCards,
   showShortcuts,
+  numpadCardLayout,
   highlightWrong,
 }: CardGridProps) {
+  const hints = cardShortcutLabels(numpadCardLayout);
   return (
     <div className="grid grid-cols-3 gap-2.5 px-4 max-w-sm mx-auto w-full">
       {tiles.map((tile, i) => {
         const isSelected = selectedIndex === i;
-        const hotkeyLabel = KEYBOARD_HINTS[i] ?? String(i + 1);
+        const hotkeyLabel = hints[i] ?? String(i + 1);
 
         let display = "";
         if (tile.alive) {

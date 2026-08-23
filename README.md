@@ -96,12 +96,12 @@ Sprint mode uses `generateSprintPuzzle(band)` to constrain the target to a speci
 ### Gameplay loop
 
 1. Board initialized with `n` live tiles (up to 6 slots; unused slots are dead).
-2. Player selects tile → operator → second tile. Each merge pushes onto undo/reset stacks.
+2. Player selects tile → operator → second tile. Each merge pushes onto the undo stack.
 3. On win (one tile equals goal): stop timer, record the solve, show review screen.
 4. Review shows the player's expression and all canonical solutions (computed asynchronously).
 5. Continue loads the next puzzle; skip marks the puzzle skipped and applies the penalty.
 
-Keyboard shortcuts: main-keyboard `1` `2` `3` select the top number row and `Q` `W` `E` the bottom row; `A` `S` `D` `F` are + − × ÷; `Z` undoes and `X` resets. Numpad `4` `5` `6` / `1` `2` `3` select the same rows. Continue with Space on review; Escape quits.
+Keyboard shortcuts: top-row or numpad `1`–`6` select cards (`1` `2` `3` / `4` `5` `6` by default), `Q` `W` `E` `R` are + − × ÷, Escape undoes, and Space skips (practice/sprint). **Numpad layout for card shortcuts** swaps top and bottom rows to `4` `5` `6` / `1` `2` `3` (same keys work either way). Space continues on the review screen. Leave/Quit is click-only.
 
 ### Sprint session lifecycle
 

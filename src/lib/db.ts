@@ -241,6 +241,57 @@ export async function insertLeaderboardEntry(
   return Promise.resolve(sqliteInsertLeaderboardEntry(name, score, createdAt, kind));
 }
 
+/** Case-insensitive match on name within a leaderboard kind. */
+export async function findLeaderboardEntriesByName(
+  name: string,
+  kind: LeaderboardKind
+): Promise<LeaderboardEntry[]> {
+  if (useNeon) {
+    const sql = await getNeon();
+    const rows = await sql`
+      SELECT id, name, score, "createdAt", kind
+      FROM leaderboard_entries
+      WHERE kind = ${kind} AND LOWER(name) = LOWER(${name})
+      ORDER BY score DESC, "createdAt" ASC
+    `;
+    return rows as LeaderboardEntry[];
+  }
+  return Promise.resolve(sqliteFindLeaderboardEntriesByName(name, kind));
+}
+
+/**
+ * Set one row to a new personal best and delete every other row with the same name.
+ * Refuses if the new score is not strictly higher than the kept row.
+ */
+export async function replaceLeaderboardScore(params: {
+  keepId: number;
+  name: string;
+  score: number;
+  createdAt: number;
+  kind: LeaderboardKind;
+}): Promise<boolean> {
+  const { keepId, name, score, createdAt, kind } = params;
+  if (useNeon) {
+    const sql = await getNeon();
+    const current = await sql`
+      SELECT id, score FROM leaderboard_entries WHERE id = ${keepId} AND kind = ${kind}
+    `;
+    const row = (current as { id: number; score: number }[])[0];
+    if (!row || score <= row.score) return false;
+    await sql`
+      UPDATE leaderboard_entries
+      SET name = ${name}, score = ${score}, "createdAt" = ${createdAt}
+      WHERE id = ${keepId}
+    `;
+    await sql`
+      DELETE FROM leaderboard_entries
+      WHERE kind = ${kind} AND LOWER(name) = LOWER(${name}) AND id <> ${keepId}
+    `;
+    return true;
+  }
+  return Promise.resolve(sqliteReplaceLeaderboardScore(params));
+}
+
 /**
  * Returns entries in the top `topScores` distinct score tiers (not the top N rows).
  * All entries tied at a qualifying score are included, so the result may contain
@@ -551,6 +602,44 @@ function sqliteInsertLeaderboardEntry(
     )
     .run(name, score, createdAt, kind);
   return Number(res.lastInsertRowid);
+}
+
+function sqliteFindLeaderboardEntriesByName(
+  name: string,
+  kind: LeaderboardKind
+): LeaderboardEntry[] {
+  return getSqliteDb()
+    .prepare(
+      `SELECT id, name, score, createdAt, kind FROM leaderboard_entries
+       WHERE kind = ? AND LOWER(name) = LOWER(?)
+       ORDER BY score DESC, createdAt ASC`
+    )
+    .all(kind, name) as LeaderboardEntry[];
+}
+
+function sqliteReplaceLeaderboardScore(params: {
+  keepId: number;
+  name: string;
+  score: number;
+  createdAt: number;
+  kind: LeaderboardKind;
+}): boolean {
+  const d = getSqliteDb();
+  const current = d
+    .prepare(`SELECT id, score FROM leaderboard_entries WHERE id = ? AND kind = ?`)
+    .get(params.keepId, params.kind) as { id: number; score: number } | undefined;
+  if (!current || params.score <= current.score) return false;
+  const tx = d.transaction(() => {
+    d.prepare(
+      `UPDATE leaderboard_entries SET name = ?, score = ?, createdAt = ? WHERE id = ?`
+    ).run(params.name, params.score, params.createdAt, params.keepId);
+    d.prepare(
+      `DELETE FROM leaderboard_entries
+       WHERE kind = ? AND LOWER(name) = LOWER(?) AND id <> ?`
+    ).run(params.kind, params.name, params.keepId);
+  });
+  tx();
+  return true;
 }
 
 function sqliteListLeaderboardEntries(

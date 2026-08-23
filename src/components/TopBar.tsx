@@ -44,12 +44,7 @@ export default function TopBar({
           onClick={onQuit}
           className="min-w-[3.25rem] h-7 px-2.5 rounded-md border border-neutral-300 bg-white text-sm font-medium leading-none text-neutral-700 active:bg-neutral-50 transition-colors"
         >
-          <div className="flex flex-col items-center justify-center leading-tight">
-            {showShortcuts && (
-              <span className="text-[10px] text-neutral-400 -mt-0.5">esc</span>
-            )}
-            <span>{quitLabel}</span>
-          </div>
+          {quitLabel}
         </button>
       </div>
       {leaderNote ? (

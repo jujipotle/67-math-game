@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { SolvedRecord, SkippedRecord } from "@/lib/types";
 import LeaderboardTable, { LeaderboardEntry } from "@/components/LeaderboardTable";
+import ConfirmSheet from "@/components/ConfirmSheet";
 import { buildApiUrl } from "@/lib/api";
 import type { DataTarget } from "@/lib/dataSource";
 
@@ -18,6 +19,10 @@ type SummaryViewProps = {
   totalTimeMs: number;
   onHome: () => void;
 };
+
+type NameConflict =
+  | { kind: "replaceable"; existingScore: number; score: number; lowerCount: number }
+  | { kind: "add"; existingScore: number; score: number };
 
 function stripOuterParens(s: string): string {
   if (s.startsWith("(") && s.endsWith(")")) return s.slice(1, -1);
@@ -55,6 +60,7 @@ export default function SummaryView({
   const [lbEntries, setLbEntries] = useState<LeaderboardEntry[]>([]);
   const [lbError, setLbError] = useState<string | null>(null);
   const [lbLoading, setLbLoading] = useState(false);
+  const [nameConflict, setNameConflict] = useState<NameConflict | null>(null);
 
   const mins = Math.floor(totalTimeMs / 60000);
   const secs = Math.floor((totalTimeMs % 60000) / 1000);
@@ -84,6 +90,70 @@ export default function SummaryView({
     if (mode !== "sprint" || !leaderboardSessionId) return;
     loadLeaderboard();
   }, [mode, leaderboardSessionId, loadLeaderboard]);
+
+  const submitScore = useCallback(
+    async (opts?: { replace?: boolean; confirmAdd?: boolean }) => {
+      if (!leaderboardSessionId) return;
+      setSubmitError(null);
+      setSubmitting(true);
+      try {
+        const res = await fetch(buildApiUrl("/api/leaderboard", target), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: leaderboardSessionId,
+            name: leaderName,
+            replace: opts?.replace === true,
+            confirmAdd: opts?.confirmAdd === true,
+          }),
+        });
+        const data = (await res.json()) as {
+          ok?: boolean;
+          score?: number;
+          error?: string;
+          conflict?: "replaceable" | "add";
+          existingScore?: number;
+          lowerCount?: number;
+        };
+        if (
+          res.status === 409 &&
+          data.conflict === "replaceable" &&
+          typeof data.existingScore === "number"
+        ) {
+          setNameConflict({
+            kind: "replaceable",
+            existingScore: data.existingScore,
+            score: typeof data.score === "number" ? data.score : userScore,
+            lowerCount: typeof data.lowerCount === "number" ? data.lowerCount : 1,
+          });
+          return;
+        }
+        if (
+          res.status === 409 &&
+          data.conflict === "add" &&
+          typeof data.existingScore === "number"
+        ) {
+          setNameConflict({
+            kind: "add",
+            existingScore: data.existingScore,
+            score: typeof data.score === "number" ? data.score : userScore,
+          });
+          return;
+        }
+        if (!res.ok || !data.ok || typeof data.score !== "number") {
+          throw new Error(data.error || "Failed to submit");
+        }
+        setNameConflict(null);
+        setSubmitOk({ score: data.score });
+        await loadLeaderboard();
+      } catch (e) {
+        setSubmitError(e instanceof Error ? e.message : "Failed to submit");
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [leaderboardSessionId, leaderName, loadLeaderboard, target, userScore]
+  );
 
   return (
     <div
@@ -122,34 +192,18 @@ export default function SummaryView({
                 <div className="flex gap-2 mb-1">
                   <input
                     value={leaderName}
-                    onChange={(e) => setLeaderName(e.target.value)}
+                    onChange={(e) => {
+                      setLeaderName(e.target.value);
+                      setNameConflict(null);
+                      setSubmitError(null);
+                    }}
                     placeholder="Your name"
                     className="flex-1 h-12 px-3 rounded-xl border border-neutral-200 text-neutral-800 bg-white"
                     maxLength={20}
                   />
                   <button
-                    disabled={submitting}
-                    onClick={async () => {
-                      setSubmitError(null);
-                      setSubmitting(true);
-                      try {
-                        const res = await fetch(buildApiUrl("/api/leaderboard", target), {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ sessionId: leaderboardSessionId, name: leaderName }),
-                        });
-                        const data = (await res.json()) as { ok?: boolean; score?: number; error?: string };
-                        if (!res.ok || !data.ok || typeof data.score !== "number") {
-                          throw new Error(data.error || "Failed to submit");
-                        }
-                        setSubmitOk({ score: data.score });
-                        await loadLeaderboard();
-                      } catch (e) {
-                        setSubmitError(e instanceof Error ? e.message : "Failed to submit");
-                      } finally {
-                        setSubmitting(false);
-                      }
-                    }}
+                    disabled={submitting || !leaderName.trim()}
+                    onClick={() => void submitScore()}
                     className="h-12 px-4 rounded-xl bg-neutral-900 text-white font-medium active:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                   >
                     Submit
@@ -172,6 +226,32 @@ export default function SummaryView({
               footnote="Tied scores are ordered by who submitted that score first."
             />
           </div>
+        )}
+
+        {nameConflict?.kind === "replaceable" && (
+          <ConfirmSheet
+            title="New personal best"
+            body={
+              nameConflict.lowerCount > 1
+                ? `“${leaderName.trim()}” already has ${nameConflict.lowerCount} entries (best: ${nameConflict.existingScore}). Replace them all with your new score of ${nameConflict.score}?`
+                : `“${leaderName.trim()}” is already on the board at ${nameConflict.existingScore}. Replace it with your new score of ${nameConflict.score}?`
+            }
+            confirmLabel="Replace all"
+            cancelLabel="Cancel"
+            onConfirm={() => void submitScore({ replace: true })}
+            onCancel={() => setNameConflict(null)}
+          />
+        )}
+        {nameConflict?.kind === "add" && (
+          <ConfirmSheet
+            title="Add this score?"
+            body={`“${leaderName.trim()}” already has ${nameConflict.existingScore} on the board. Your score is ${nameConflict.score}. Add it as a separate entry? Your existing score won’t be changed.`}
+            confirmLabel="Add entry"
+            showConfirmShortcut={false}
+            cancelLabel="Cancel"
+            onConfirm={() => void submitScore({ confirmAdd: true })}
+            onCancel={() => setNameConflict(null)}
+          />
         )}
 
         {solved.length === 0 && skipped.length === 0 ? (

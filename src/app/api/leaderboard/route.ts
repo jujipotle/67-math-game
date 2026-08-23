@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 import { containsBlockedTerm } from "@/lib/blocklist";
 import {
   deleteLeaderboardEntries,
+  findLeaderboardEntriesByName,
   getSprintSession,
   insertLeaderboardEntry,
   listLeaderboardEntries,
   markSprintSubmitted,
+  replaceLeaderboardScore,
   updateLeaderboardEntry,
   LeaderboardKind,
 } from "@/lib/db";
@@ -23,12 +25,22 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => null)) as { sessionId?: string; name?: string } | null;
+  const body = (await req.json().catch(() => null)) as {
+    sessionId?: string;
+    name?: string;
+    replace?: boolean;
+    confirmAdd?: boolean;
+  } | null;
   const sessionId = body?.sessionId;
   const nameRaw = body?.name ?? "";
   const name = sanitizeName(nameRaw);
+  const replace = body?.replace === true;
+  const confirmAdd = body?.confirmAdd === true;
 
   if (!sessionId || !name) {
+    return NextResponse.json({ error: "invalid request" }, { status: 400 });
+  }
+  if (replace && confirmAdd) {
     return NextResponse.json({ error: "invalid request" }, { status: 400 });
   }
 
@@ -40,11 +52,60 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "name not allowed" }, { status: 400 });
   }
 
-  // New submissions always go to the "new" balanced sprint leaderboard.
-  const id = await insertLeaderboardEntry(name, session.solved, Date.now(), "new");
+  const kind: LeaderboardKind = "new";
+  const score = session.solved;
+  const existing = await findLeaderboardEntriesByName(name, kind);
+  const best = existing[0] ?? null;
+
+  if (best) {
+    if (score > best.score) {
+      if (!replace) {
+        return NextResponse.json(
+          {
+            error: "name exists",
+            conflict: "replaceable",
+            existingScore: best.score,
+            score,
+            lowerCount: existing.length,
+          },
+          { status: 409 }
+        );
+      }
+      const ok = await replaceLeaderboardScore({
+        keepId: best.id,
+        name,
+        score,
+        createdAt: Date.now(),
+        kind,
+      });
+      if (!ok) {
+        return NextResponse.json(
+          { error: "cannot replace with a lower score" },
+          { status: 409 }
+        );
+      }
+      await markSprintSubmitted(sessionId);
+      return NextResponse.json({ ok: true, id: best.id, score, replaced: true });
+    }
+
+    // Not a new personal best — offer to add without touching existing entries.
+    if (!confirmAdd) {
+      return NextResponse.json(
+        {
+          error: "name exists",
+          conflict: "add",
+          existingScore: best.score,
+          score,
+        },
+        { status: 409 }
+      );
+    }
+  }
+
+  const id = await insertLeaderboardEntry(name, score, Date.now(), kind);
   await markSprintSubmitted(sessionId);
 
-  return NextResponse.json({ ok: true, id, score: session.solved });
+  return NextResponse.json({ ok: true, id, score });
 }
 
 /**
