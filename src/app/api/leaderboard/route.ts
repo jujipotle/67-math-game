@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { containsBlockedTerm } from "@/lib/blocklist";
 import {
-  deleteLeaderboardEntry,
+  deleteLeaderboardEntries,
   getSprintSession,
   insertLeaderboardEntry,
   listLeaderboardEntries,
@@ -9,15 +9,9 @@ import {
   updateLeaderboardEntry,
   LeaderboardKind,
 } from "@/lib/db";
+import { sanitizeName } from "@/lib/sanitize";
 
 export const runtime = "nodejs";
-
-function sanitizeName(raw: string): string | null {
-  const name = raw.trim();
-  if (name.length < 1 || name.length > 20) return null;
-  if (!/^[a-zA-Z0-9 _-]+$/.test(name)) return null;
-  return name;
-}
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -54,9 +48,8 @@ export async function POST(req: Request) {
 }
 
 /**
- * DELETE: Remove a leaderboard entry (admin only).
- * Body: { adminKey: string, id: number }
- * Set LEADERBOARD_ADMIN_KEY in .env to enable. If unset, DELETE returns 501.
+ * DELETE: Remove leaderboard entries (admin only).
+ * Body: { adminKey: string, id: number } or { adminKey: string, ids: number[] }
  */
 export async function DELETE(req: Request) {
   const adminKey = process.env.LEADERBOARD_ADMIN_KEY;
@@ -67,19 +60,31 @@ export async function DELETE(req: Request) {
     );
   }
 
-  const body = (await req.json().catch(() => null)) as { adminKey?: string; id?: number } | null;
+  const body = (await req.json().catch(() => null)) as {
+    adminKey?: string;
+    id?: number;
+    ids?: number[];
+  } | null;
   const key = body?.adminKey;
-  const id = typeof body?.id === "number" ? body.id : NaN;
-
-  if (key !== adminKey || !Number.isInteger(id) || id < 1) {
+  if (key !== adminKey) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const deleted = await deleteLeaderboardEntry(id);
-  if (!deleted) {
+  const ids = Array.isArray(body?.ids)
+    ? body.ids
+    : typeof body?.id === "number"
+      ? [body.id]
+      : [];
+  const valid = ids.filter((id) => Number.isInteger(id) && id > 0);
+  if (valid.length === 0) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  const deleted = await deleteLeaderboardEntries(valid);
+  if (deleted === 0) {
     return NextResponse.json({ error: "entry not found" }, { status: 404 });
   }
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, deleted });
 }
 
 /**

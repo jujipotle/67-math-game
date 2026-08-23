@@ -19,7 +19,7 @@ export type SprintSessionRow = {
   band: number;
 };
 
-const useNeon =
+export const useNeon =
   typeof process !== "undefined" &&
   (!!process.env.DATABASE_URL || !!process.env.POSTGRES_URL);
 
@@ -77,6 +77,57 @@ async function initNeonSchema(
       PRIMARY KEY ("sessionId", idx)
     )
   `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS rooms (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      "hostId" TEXT NOT NULL,
+      "isPrivate" INTEGER NOT NULL DEFAULT 0,
+      "passwordHash" TEXT,
+      status TEXT NOT NULL,
+      round INTEGER NOT NULL DEFAULT 0,
+      "roundStartedAt" BIGINT,
+      "roundEndsAt" BIGINT,
+      "roundDurationMs" BIGINT NOT NULL DEFAULT 300000,
+      "createdAt" BIGINT NOT NULL,
+      "updatedAt" BIGINT NOT NULL
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS room_players (
+      id TEXT PRIMARY KEY,
+      "roomId" TEXT NOT NULL,
+      name TEXT NOT NULL,
+      "joinedAt" BIGINT NOT NULL,
+      "lastSeenAt" BIGINT NOT NULL,
+      role TEXT NOT NULL,
+      score INTEGER NOT NULL DEFAULT 0,
+      "scoreReachedAt" BIGINT,
+      "puzzleIdx" INTEGER NOT NULL DEFAULT 0,
+      participated INTEGER NOT NULL DEFAULT 0
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS room_puzzles (
+      "roomId" TEXT NOT NULL,
+      round INTEGER NOT NULL,
+      idx INTEGER NOT NULL,
+      goal INTEGER NOT NULL,
+      "cardsJson" TEXT NOT NULL,
+      PRIMARY KEY ("roomId", round, idx)
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS room_players_room ON room_players ("roomId")`;
+  await sql`ALTER TABLE rooms ADD COLUMN IF NOT EXISTS "roundDurationMs" BIGINT NOT NULL DEFAULT 300000`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS room_kicks (
+      "playerId" TEXT PRIMARY KEY,
+      "roomId" TEXT NOT NULL,
+      "roomName" TEXT NOT NULL,
+      "kickedBy" TEXT NOT NULL,
+      "createdAt" BIGINT NOT NULL
+    )
+  `;
 }
 
 // ---- Neon (async) path ----
@@ -91,7 +142,7 @@ async function neonDb() {
 
 let neonSql: Awaited<ReturnType<typeof neonDb>> | null = null;
 
-async function getNeon() {
+export async function getNeon() {
   if (neonSql) return neonSql;
   neonSql = await neonDb();
   return neonSql;
@@ -226,6 +277,15 @@ export async function deleteLeaderboardEntry(id: number): Promise<boolean> {
   return Promise.resolve(sqliteDeleteLeaderboardEntry(id));
 }
 
+export async function deleteLeaderboardEntries(ids: number[]): Promise<number> {
+  const unique = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+  let n = 0;
+  for (const id of unique) {
+    if (await deleteLeaderboardEntry(id)) n += 1;
+  }
+  return n;
+}
+
 export async function updateLeaderboardEntry(params: {
   id: number;
   name: string;
@@ -336,7 +396,7 @@ import path from "node:path";
 
 let sqliteDb: Database.Database | null = null;
 
-function getSqliteDb(): Database.Database {
+export function getSqliteDb(): Database.Database {
   if (sqliteDb) return sqliteDb;
   const dbPath = path.join(process.cwd(), "data", "leaderboard.db");
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -368,6 +428,48 @@ function getSqliteDb(): Database.Database {
       finalExpr TEXT,
       PRIMARY KEY (sessionId, idx)
     );
+    CREATE TABLE IF NOT EXISTS rooms (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      hostId TEXT NOT NULL,
+      isPrivate INTEGER NOT NULL DEFAULT 0,
+      passwordHash TEXT,
+      status TEXT NOT NULL,
+      round INTEGER NOT NULL DEFAULT 0,
+      roundStartedAt INTEGER,
+      roundEndsAt INTEGER,
+      roundDurationMs INTEGER NOT NULL DEFAULT 300000,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS room_players (
+      id TEXT PRIMARY KEY,
+      roomId TEXT NOT NULL,
+      name TEXT NOT NULL,
+      joinedAt INTEGER NOT NULL,
+      lastSeenAt INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      score INTEGER NOT NULL DEFAULT 0,
+      scoreReachedAt INTEGER,
+      puzzleIdx INTEGER NOT NULL DEFAULT 0,
+      participated INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS room_puzzles (
+      roomId TEXT NOT NULL,
+      round INTEGER NOT NULL,
+      idx INTEGER NOT NULL,
+      goal INTEGER NOT NULL,
+      cardsJson TEXT NOT NULL,
+      PRIMARY KEY (roomId, round, idx)
+    );
+    CREATE INDEX IF NOT EXISTS room_players_room ON room_players (roomId);
+    CREATE TABLE IF NOT EXISTS room_kicks (
+      playerId TEXT PRIMARY KEY,
+      roomId TEXT NOT NULL,
+      roomName TEXT NOT NULL,
+      kickedBy TEXT NOT NULL,
+      createdAt INTEGER NOT NULL
+    );
   `);
   // Backfill kind column on existing SQLite databases that predate it.
   try {
@@ -382,6 +484,13 @@ function getSqliteDb(): Database.Database {
   try {
     sqliteDb.exec(
       `ALTER TABLE sprint_sessions ADD COLUMN band INTEGER NOT NULL DEFAULT 0;`
+    );
+  } catch {
+    // Ignore if the column already exists.
+  }
+  try {
+    sqliteDb.exec(
+      `ALTER TABLE rooms ADD COLUMN roundDurationMs INTEGER NOT NULL DEFAULT 300000;`
     );
   } catch {
     // Ignore if the column already exists.

@@ -10,8 +10,9 @@ type CardGridProps = {
   useFaceCards: boolean;
   showShortcuts: boolean;
   highlightWrong?: boolean;
-  useNumpadMapping?: boolean;
 };
+
+const KEYBOARD_HINTS = ["1", "2", "3", "Q", "W", "E"];
 
 export default function CardGrid({
   tiles,
@@ -20,20 +21,12 @@ export default function CardGrid({
   useFaceCards,
   showShortcuts,
   highlightWrong,
-  useNumpadMapping,
 }: CardGridProps) {
   return (
     <div className="grid grid-cols-3 gap-2.5 px-4 max-w-sm mx-auto w-full">
       {tiles.map((tile, i) => {
         const isSelected = selectedIndex === i;
-
-        let hotkeyLabel = String(i + 1);
-        if (useNumpadMapping) {
-          // In numpad mode, labels reflect physical 1–6 mapping:
-          // index 0–5 correspond to keys 4,5,6 (top row) and 1,2,3 (bottom row)
-          const invMap = [4, 5, 6, 1, 2, 3];
-          hotkeyLabel = String(invMap[i] ?? i + 1);
-        }
+        const hotkeyLabel = KEYBOARD_HINTS[i] ?? String(i + 1);
 
         let display = "";
         if (tile.alive) {

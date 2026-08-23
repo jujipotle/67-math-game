@@ -43,13 +43,13 @@ A puzzle is **solved** when exactly one tile remains and its value equals the ta
 ### Sprint mode
 
 - 5-minute countdown timer.
-- Server creates a session and tracks the official solve count.
-- Puzzles are generated client-side but **registered** with the server before play and **marked** (solved/skipped) after each puzzle.
-- **Balanced band rotation**: targets cycle through three bands (1–66 / 67–133 / 134–200). The band advances only on solve; skipping keeps the same band so players cannot skip until an easy target appears.
+- Server creates a session, **generates every puzzle**, and tracks the official solve count.
+- The client requests puzzles from `/api/sprint/start` (first puzzle) and `/api/sprint/next` (subsequent puzzles). It never sends `goal` or `cards`.
+- **Balanced band rotation**: targets cycle through three bands (1–66 / 67–133 / 134–200). The band is tracked on `sprint_sessions.band`, advances only on solve, and stays put on skip so players cannot hunt for easier targets.
 - Skip penalty: **−20 seconds**.
 - After the sprint, the player may submit their name to the leaderboard. The score comes from the server's solve count, not the client.
 
-Two leaderboard boards exist: **`new`** (balanced sprint, current scoring) and **`old`** (legacy entries from before band rotation was introduced). New submissions always go to `new`.
+The leaderboard shows the current **`new`** board only (balanced sprint scoring). Legacy `old` entries remain in the database for admin use but are not shown in the UI.
 
 ---
 
@@ -58,14 +58,15 @@ Two leaderboard boards exist: **`new`** (balanced sprint, current scoring) and *
 ```
 Browser (React client)
 ├── page.tsx          — game state, screens, timers, API calls
-├── components/       — UI fragments
+├── components/       — UI fragments (shared LeaderboardTable, etc.)
 ├── lib/              — puzzle engine (generator, solver, rational math)
 ├── workers/          — Web Workers for heavy computation
-└── localStorage      — practice session history
+└── localStorage      — practice session history; dev data-source toggle
 
 Next.js API routes (Node.js runtime)
-├── /api/sprint/*     — session lifecycle
-└── /api/leaderboard  — read / submit / admin CRUD
+├── /api/sprint/*     — session lifecycle (server-generated puzzles)
+├── /api/leaderboard  — read / submit / admin CRUD
+└── /api/dev-proxy/*  — dev-only: forward requests to local or live DB (404 in prod)
 
 Database
 ├── Neon Postgres     — production (DATABASE_URL or POSTGRES_URL)
@@ -100,25 +101,27 @@ Sprint mode uses `generateSprintPuzzle(band)` to constrain the target to a speci
 4. Review shows the player's expression and all canonical solutions (computed asynchronously).
 5. Continue loads the next puzzle; skip marks the puzzle skipped and applies the penalty.
 
-Keyboard shortcuts are supported for operators, undo (Backspace), reset (R), skip (S), and continue (Space on review).
+Keyboard shortcuts: main-keyboard `1` `2` `3` select the top number row and `Q` `W` `E` the bottom row; `A` `S` `D` `F` are + − × ÷; `Z` undoes and `X` resets. Numpad `4` `5` `6` / `1` `2` `3` select the same rows. Continue with Space on review; Escape quits.
 
 ### Sprint session lifecycle
 
 ```
 POST /api/sprint/start
-  → { sessionId, endsAt }
+  → server creates session, generates puzzle #1
+  → { sessionId, endsAt, idx, goal, cards }
 
-POST /api/sprint/register  { sessionId, idx, goal, cards }
-  → puzzle row created with status "issued"
+POST /api/sprint/next  { sessionId }
+  → server generates next puzzle for current band
+  → { idx, goal, cards, endsAt }
 
 POST /api/sprint/mark  { sessionId, idx, outcome, finalExpr? }
-  → server validates solution, updates solve count, deducts time
+  → server validates solution against stored puzzle, updates solve count / band, deducts time
 
 POST /api/leaderboard  { sessionId, name }
   → score read from sprint_sessions.solved, entry inserted
 ```
 
-The client generates puzzles locally and tells the server what it is about to play. The server stores that registration and validates the final expression on mark. The score stored for leaderboard submission is always `sprint_sessions.solved` in the database.
+The server is the puzzle authority: it picks the band, generates goal/cards, stores them in `sprint_puzzles`, and validates the player's expression on mark. The score stored for leaderboard submission is always `sprint_sessions.solved` in the database.
 
 ### Timer model
 
@@ -179,7 +182,7 @@ Both backends share the same logical schema. Schema initialization runs on first
 
 The leaderboard query uses `DENSE_RANK() OVER (ORDER BY score DESC)` to select the top 50 **distinct score values**, returning every entry tied at a qualifying score. A tier with many ties can produce more than 50 total rows. Within a tier, entries are ordered by earliest submission (`createdAt ASC`).
 
-The UI (`LeaderboardView`) groups entries into score tiers and shows the top 3 tiers expanded by default; lower tiers are collapsible.
+The UI uses a shared `LeaderboardTable` component everywhere (home leaderboard screen, sprint summary). Entries are grouped by score into a two-column **Score / Players** table (ties share a row). The top 3 score tiers show by default; a **Show all** button expands the full list.
 
 ### PWA support
 
@@ -414,6 +417,7 @@ Same auth gate as DELETE. Name must pass sanitization and blocklist. Returns 200
 | `endsAt` | BIGINT | `startedAt + remainingBudget` |
 | `solved` | INTEGER | Server-side solve count |
 | `submitted` | INTEGER | 0 or 1; leaderboard submitted |
+| `band` | INTEGER | Difficulty band (0, 1, or 2); advances on solve |
 
 ### `sprint_puzzles`
 
@@ -423,7 +427,7 @@ Same auth gate as DELETE. Name must pass sanitization and blocklist. Returns 200
 | `idx` | INTEGER | Puzzle number within session |
 | `goal` | INTEGER | Target value |
 | `cardsJson` | TEXT | JSON array of card values |
-| `issuedAt` | BIGINT | When puzzle was registered |
+| `issuedAt` | BIGINT | When puzzle was issued |
 | `status` | TEXT | `issued`, `solved`, or `skipped` |
 | `finalExpr` | TEXT | Player's expression (nullable) |
 
@@ -462,11 +466,24 @@ Vercel does **not** read your local `.env`. Set these in **Vercel → Settings �
 ### Local development
 
 ```bash
+cp .env.example .env   # fill in LEADERBOARD_ADMIN_KEY (and optional blocklist)
 npm install
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000). Without `DATABASE_URL`, the app creates `data/leaderboard.db` automatically.
+
+#### Dev-only tooling
+
+| Feature | Where | What it does |
+|---|---|---|
+| **Data source toggle** | Home screen (below buttons) | **Local** = SQLite on your machine. **Actual** = live production API via `/api/dev-proxy/*`. Controls sprint play, leaderboard, and admin — one switch for everything. Persisted in `localStorage`. |
+| **Admin page** | [http://localhost:3000/admin](http://localhost:3000/admin) (also linked from home) | View, edit, and delete leaderboard entries. Uses the home-screen data source (no separate toggle). Admin key is read from `.env` server-side and never sent by the browser. |
+| **Dev proxy** | `/api/dev-proxy/<path>?target=local\|production` | Forwards any API call to local or live. Injects `LEADERBOARD_ADMIN_KEY` for leaderboard DELETE/PATCH. Returns 404 on the deployed site. |
+
+> **Warning:** With the toggle set to **Actual**, playing a sprint or submitting a score writes to the **live** production database. Use **Local** for normal development.
+
+The old `leaderboard_admin.ipynb` notebook has been removed; use the `/admin` page instead.
 
 ### Production
 
@@ -500,6 +517,7 @@ npm start
 | `next.config.ts` | Next.js configuration (defaults) |
 | `postcss.config.mjs` | PostCSS config for Tailwind CSS 4 |
 | `eslint.config.mjs` | ESLint configuration |
+| `.env.example` | Template for local `.env` (committed; actual `.env` is gitignored) |
 | `.gitignore` | Ignores `node_modules`, `.next`, `data/`, `.env*`, etc. |
 
 ### `public/`
@@ -515,7 +533,7 @@ npm start
 |---|---|
 | `page.tsx` | Main application: all screens, game state, timers, keyboard shortcuts, API calls, worker management |
 | `admin/page.tsx` | Dev-only leaderboard admin UI (`/admin`; disabled on production) |
-| `layout.tsx` | Root layout, fonts (Geist), metadata, PWA config, Vercel Analytics |
+| `layout.tsx` | Root layout, fonts (Geist), metadata, PWA config, `DataSourceProvider`, Vercel Analytics |
 | `globals.css` | Global styles, Tailwind import, safe-area CSS variables |
 | `icon.tsx` | Dynamic favicon generation (Next.js metadata route) |
 | `apple-icon.tsx` | Apple touch icon generation (Next.js metadata route) |
@@ -552,6 +570,7 @@ npm start
 | `rational.ts` | Exact rational arithmetic (`bigint`), serialization for `localStorage` |
 | `solver.ts` | Brute-force solver, expression parser, canonicalization, `hasSolution()`, `validateFinalExpr()` |
 | `generator.ts` | Random puzzle generation from a 52-card deck; sprint band constraints |
+| `sprintServer.ts` | Server-side puzzle issuance: `issueSprintPuzzle()`, band helpers |
 | `db.ts` | Database abstraction (Neon + SQLite), schema init, all persistence operations |
 | `storage.ts` | Practice session persistence in `localStorage` |
 | `blocklist.ts` | Env-driven offensive-name filter with normalization |

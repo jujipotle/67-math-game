@@ -12,6 +12,7 @@ import {
   SolvedRecord,
   SkippedRecord,
   Puzzle,
+  RoomStateView,
 } from "@/lib/types";
 import { rat, applyOp, eq, ratToString } from "@/lib/rational";
 import { solve } from "@/lib/solver";
@@ -26,7 +27,43 @@ import OpRow from "@/components/OpRow";
 import ReviewPanel from "@/components/ReviewPanel";
 import SummaryView from "@/components/SummaryView";
 import LeaderboardView from "@/components/LeaderboardView";
+import MultiplayerHub from "@/components/MultiplayerHub";
+import RoomLobby from "@/components/RoomLobby";
+import RoomResults from "@/components/RoomResults";
+import RoomWaiting from "@/components/RoomWaiting";
+import ConfirmSheet from "@/components/ConfirmSheet";
+import { clearMpSeat, loadMpSeat, saveMpSeat } from "@/lib/mpSeat";
 
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted || ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(t);
+        resolve();
+      },
+      { once: true }
+    );
+  });
+}
+
+function mergeAbortSignals(signals: AbortSignal[]): AbortSignal {
+  const any = (AbortSignal as typeof AbortSignal & { any?: (s: AbortSignal[]) => AbortSignal }).any;
+  if (typeof any === "function") return any(signals);
+  const ac = new AbortController();
+  for (const s of signals) {
+    if (s.aborted) {
+      ac.abort();
+      break;
+    }
+    s.addEventListener("abort", () => ac.abort(), { once: true });
+  }
+  return ac.signal;
+}
+
+const MP_LONG_POLL_MS = 8000;
 const SPRINT_DURATION_MS = 5 * 60 * 1000;
 
 function makeBoardFromPuzzle(puzzle: Puzzle): BoardState {
@@ -120,7 +157,6 @@ export default function Home() {
   const [selectedOp, setSelectedOp] = useState<Op | null>(null);
   const [useFaceCards, setUseFaceCards] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
-  const [useNumpadMapping, setUseNumpadMapping] = useState(false);
   const [sprintSessionId, setSprintSessionId] = useState<string | null>(null);
   const [sprintPuzzleIdx, setSprintPuzzleIdx] = useState<number | null>(null);
   const [playElapsedMs, setPlayElapsedMs] = useState(0);
@@ -141,6 +177,29 @@ export default function Home() {
   const skipDebounceRef = useRef(0);
   const sessionIndexRef = useRef(1);
   const leaderboardCacheRef = useRef<{ id: number; name: string; score: number; createdAt: number }[] | null>(null);
+  const [mpRoom, setMpRoom] = useState<RoomStateView | null>(null);
+  const [mpPlayerId, setMpPlayerId] = useState<string | null>(null);
+  const [mpPrefillRoom, setMpPrefillRoom] = useState<string | null>(null);
+  const [waitingPractice, setWaitingPractice] = useState(false);
+  const [mpStarting, setMpStarting] = useState(false);
+  const [mpHostLeaveOpen, setMpHostLeaveOpen] = useState(false);
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
+  const [mpEndConfirmOpen, setMpEndConfirmOpen] = useState(false);
+  const [mpEnding, setMpEnding] = useState(false);
+  const [mpWaitIdle, setMpWaitIdle] = useState(false);
+  const [mpActionError, setMpActionError] = useState<string | null>(null);
+  const [mpPopup, setMpPopup] = useState<{ title: string; body?: string } | null>(null);
+  const [homePopup, setHomePopup] = useState<{ title: string; body?: string } | null>(null);
+  const mpPuzzlesRef = useRef<Map<number, Puzzle>>(new Map());
+  const mpPlayerIdRef = useRef<string | null>(null);
+  const mpRoomIdRef = useRef<string | null>(null);
+  const mpIdxRef = useRef(1);
+  const waitingPracticeRef = useRef(false);
+  const mpPendingSolveRef = useRef(false);
+  const mpWasHostRef = useRef<boolean | null>(null);
+  const mpPollFailsRef = useRef(0);
+  const didRestoreSeatRef = useRef(false);
+  const mpSyncRef = useRef("");
 
   const QUEUE_TARGET = 4;
 
@@ -167,8 +226,13 @@ export default function Home() {
       // Cap dt to prevent tab throttling from eating time in one tick
       if (dt > 2000) dt = 2000;
 
-      if (mode === "practice") {
+      if (mode === "practice" && !waitingPractice) {
         setPlayElapsedMs((prev) => prev + dt);
+      } else if (mode === "multiplayer" || waitingPractice) {
+        const ends = mpRoom?.roundEndsAt;
+        if (ends != null) {
+          setSprintRemainingMs(Math.max(0, ends - Date.now()));
+        }
       } else {
         setSprintRemainingMs((prev) => {
           const next = prev - dt;
@@ -182,7 +246,7 @@ export default function Home() {
     }, 100);
 
     return () => clearInterval(interval);
-  }, [timerRunning, mode]);
+  }, [timerRunning, mode, waitingPractice, mpRoom?.roundEndsAt]);
 
   const refillPuzzleQueueRef = useRef<() => void>(() => {});
 
@@ -382,6 +446,7 @@ export default function Home() {
 
   const startSession = useCallback(
     (m: Mode) => {
+      setHomePopup(null);
       setMode(m);
       setPuzzle(null);
       setBoard(null);
@@ -475,7 +540,531 @@ export default function Home() {
     [startNewPuzzle, target]
   );
 
-  const handleQuit = useCallback(() => {
+  const cacheMpPuzzles = useCallback((room: RoomStateView) => {
+    for (const p of room.puzzles) {
+      mpPuzzlesRef.current.set(p.idx, {
+        goal: p.goal,
+        cards: p.cards,
+        n: p.cards.length,
+      });
+    }
+  }, []);
+
+  const loadMpPuzzle = useCallback(
+    (idx: number) => {
+      mpIdxRef.current = idx;
+      const p = mpPuzzlesRef.current.get(idx);
+      if (!p) {
+        setPuzzle(null);
+        setBoard(null);
+        setGenerating(true);
+        return;
+      }
+      const b = makeBoardFromPuzzle(p);
+      setPuzzle(p);
+      setBoard(b);
+      setCurrentSolutions([]);
+      setSolutionsReady(false);
+      setHistoryStack([]);
+      setStepStack([]);
+      setSelectedTile(null);
+      setSelectedOp(null);
+      setGenerating(false);
+      setTimerRunning(true);
+      skipDebounceRef.current = 0;
+
+      const id = ++solveAbortRef.current;
+      if (workerRef.current) {
+        workerBusyRef.current = true;
+        workerRef.current.postMessage({
+          type: "solveAll",
+          id,
+          cards: p.cards,
+          goal: p.goal,
+        });
+      } else {
+        setTimeout(() => {
+          if (solveAbortRef.current !== id) return;
+          const solutions = solve(p.cards, p.goal);
+          if (solveAbortRef.current !== id) return;
+          setCurrentSolutions(solutions);
+          setSolutionsReady(true);
+        }, 0);
+      }
+    },
+    []
+  );
+
+  const mpClear = useCallback(() => {
+    clearMpSeat();
+    setMpRoom(null);
+    setMpPlayerId(null);
+    mpPlayerIdRef.current = null;
+    mpRoomIdRef.current = null;
+    mpPuzzlesRef.current.clear();
+    mpIdxRef.current = 1;
+    setWaitingPractice(false);
+    waitingPracticeRef.current = false;
+    setMpStarting(false);
+    setMpHostLeaveOpen(false);
+    setLeaveConfirmOpen(false);
+    setMpEndConfirmOpen(false);
+    setMpEnding(false);
+    setMpWaitIdle(false);
+    setMpPopup(null);
+    setMpActionError(null);
+    mpPendingSolveRef.current = false;
+    mpWasHostRef.current = null;
+    mpPollFailsRef.current = 0;
+    mpSyncRef.current = "";
+    setTimerRunning(false);
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", "/");
+    }
+  }, []);
+
+  const mpLeave = useCallback(
+    async (newHostId?: string) => {
+      const roomId = mpRoomIdRef.current;
+      const playerId = mpPlayerIdRef.current;
+      if (roomId && playerId) {
+        try {
+          await fetch(buildApiUrl(`/api/rooms/${roomId}`, target), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "leave", playerId, newHostId }),
+            keepalive: true,
+          });
+        } catch {
+          // ignore
+        }
+      }
+      mpClear();
+      setScreen("home");
+    },
+    [mpClear, target]
+  );
+
+  const applyRoomSnapshot = useCallback(
+    (room: RoomStateView) => {
+      setMpRoom(room);
+      mpRoomIdRef.current = room.id;
+      if (room.sync) mpSyncRef.current = room.sync;
+      saveMpSeat({
+        roomId: room.id,
+        playerId: room.you.playerId,
+        roomName: room.name,
+      });
+      if (typeof window !== "undefined") {
+        window.history.replaceState(
+          null,
+          "",
+          `/?room=${encodeURIComponent(room.name)}`
+        );
+      }
+      cacheMpPuzzles(room);
+      if (room.roundEndsAt != null) {
+        setSprintRemainingMs(Math.max(0, room.roundEndsAt - Date.now()));
+      }
+
+      if (mpWasHostRef.current === false && room.you.isHost) {
+        setMpPopup({ title: "You're the host now." });
+      }
+      mpWasHostRef.current = room.you.isHost;
+
+      if (room.status === "lobby") {
+        setWaitingPractice(false);
+        waitingPracticeRef.current = false;
+        setTimerRunning(false);
+        setScreen("mp-lobby");
+        return;
+      }
+
+      if (room.status === "results") {
+        setWaitingPractice(false);
+        waitingPracticeRef.current = false;
+        setMpEndConfirmOpen(false);
+        setTimerRunning(false);
+        setScreen("mp-results");
+        return;
+      }
+
+      if (room.you.role === "waiting") {
+        setScreen((prev) =>
+          prev === "play" && waitingPracticeRef.current
+            ? prev
+            : prev === "review" && waitingPracticeRef.current
+              ? prev
+              : "mp-wait"
+        );
+        return;
+      }
+
+      setWaitingPractice(false);
+      waitingPracticeRef.current = false;
+      setMode("multiplayer");
+      setTimerRunning(true);
+      if (!mpPendingSolveRef.current) {
+        setSolvedCount(room.you.score);
+      }
+      setScreen((prev) => {
+        if (mpPendingSolveRef.current && prev === "play") {
+          return "play";
+        }
+        if (prev !== "play") {
+          loadMpPuzzle(room.you.puzzleIdx);
+        } else if (room.you.puzzleIdx > mpIdxRef.current) {
+          loadMpPuzzle(room.you.puzzleIdx);
+        } else if (!mpPuzzlesRef.current.get(mpIdxRef.current) && room.puzzles.length) {
+          loadMpPuzzle(mpIdxRef.current);
+        }
+        return "play";
+      });
+    },
+    [cacheMpPuzzles, loadMpPuzzle]
+  );
+
+  const applyRoomSnapshotRef = useRef(applyRoomSnapshot);
+  applyRoomSnapshotRef.current = applyRoomSnapshot;
+
+  const mpEntered = useCallback(
+    (room: RoomStateView) => {
+      setMpPlayerId(room.you.playerId);
+      mpPlayerIdRef.current = room.you.playerId;
+      mpRoomIdRef.current = room.id;
+      if (typeof window !== "undefined") {
+        window.history.replaceState(
+          null,
+          "",
+          `/?room=${encodeURIComponent(room.name)}`
+        );
+      }
+      applyRoomSnapshot(room);
+    },
+    [applyRoomSnapshot]
+  );
+
+  const mpStart = useCallback(async () => {
+    const roomId = mpRoomIdRef.current;
+    const playerId = mpPlayerIdRef.current;
+    if (!roomId || !playerId) return;
+    setMpStarting(true);
+    try {
+      const res = await fetch(buildApiUrl(`/api/rooms/${roomId}`, target), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start", playerId }),
+      });
+      const data = (await res.json()) as { room?: RoomStateView; error?: string };
+      if (res.ok && data.room) {
+        setMpActionError(null);
+        applyRoomSnapshot(data.room);
+      } else {
+        setMpActionError(data.error || "Could not start the round");
+      }
+    } finally {
+      setMpStarting(false);
+    }
+  }, [applyRoomSnapshot, target]);
+
+  const mpSetDuration = useCallback(
+    async (durationMs: number) => {
+      const roomId = mpRoomIdRef.current;
+      const playerId = mpPlayerIdRef.current;
+      if (!roomId || !playerId) return;
+      try {
+        const res = await fetch(buildApiUrl(`/api/rooms/${roomId}`, target), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "duration", playerId, durationMs }),
+        });
+        const data = (await res.json()) as { room?: RoomStateView; error?: string };
+        if (res.ok && data.room) {
+          setMpActionError(null);
+          applyRoomSnapshot(data.room);
+        } else {
+          setMpActionError(data.error || "Could not update round length");
+        }
+      } catch {
+        setMpActionError("Could not update round length");
+      }
+    },
+    [applyRoomSnapshot, target]
+  );
+
+  const mpEndRound = useCallback(async () => {
+    const roomId = mpRoomIdRef.current;
+    const playerId = mpPlayerIdRef.current;
+    if (!roomId || !playerId) return;
+    setMpEnding(true);
+    try {
+      const res = await fetch(buildApiUrl(`/api/rooms/${roomId}`, target), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "end", playerId }),
+      });
+      const data = (await res.json()) as { room?: RoomStateView; error?: string };
+      if (res.ok && data.room) {
+        setMpEndConfirmOpen(false);
+        setMpActionError(null);
+        applyRoomSnapshot(data.room);
+      } else {
+        setMpActionError(data.error || "Could not end the round");
+      }
+    } finally {
+      setMpEnding(false);
+    }
+  }, [applyRoomSnapshot, target]);
+
+  const mpKick = useCallback(
+    async (targetId: string) => {
+      const roomId = mpRoomIdRef.current;
+      const playerId = mpPlayerIdRef.current;
+      if (!roomId || !playerId || !targetId) return;
+      const res = await fetch(buildApiUrl(`/api/rooms/${roomId}`, target), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "kick", playerId, targetId }),
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        setMpActionError(data.error || "Could not remove that player");
+        return;
+      }
+      setMpActionError(null);
+      const snap = await fetch(
+        buildApiUrl(`/api/rooms/${roomId}?playerId=${playerId}`, target),
+        { cache: "no-store" }
+      );
+      const snapData = (await snap.json()) as { room?: RoomStateView };
+      if (snap.ok && snapData.room) applyRoomSnapshot(snapData.room);
+      void data;
+    },
+    [applyRoomSnapshot, target]
+  );
+
+  const mpSubmitSolve = useCallback(
+    async (finalExpr: string) => {
+      const roomId = mpRoomIdRef.current;
+      const playerId = mpPlayerIdRef.current;
+      const idx = mpIdxRef.current;
+      if (!roomId || !playerId) return;
+
+      mpPendingSolveRef.current = true;
+      const nextIdx = idx + 1;
+      setSolvedCount((c) => c + 1);
+      if (mpPuzzlesRef.current.has(nextIdx)) {
+        loadMpPuzzle(nextIdx);
+      } else {
+        mpIdxRef.current = nextIdx;
+        setPuzzle(null);
+        setBoard(null);
+        setGenerating(true);
+      }
+
+      const rewind = () => {
+        mpPendingSolveRef.current = false;
+        setSolvedCount((c) => Math.max(0, c - 1));
+        loadMpPuzzle(idx);
+      };
+
+      try {
+        const res = await fetch(buildApiUrl(`/api/rooms/${roomId}`, target), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "solve", playerId, idx, finalExpr }),
+        });
+        const data = (await res.json()) as { room?: RoomStateView };
+        if (res.ok && data.room) {
+          mpPendingSolveRef.current = false;
+          cacheMpPuzzles(data.room);
+          setMpRoom(data.room);
+          setSolvedCount(data.room.you.score);
+          if (!mpPuzzlesRef.current.get(mpIdxRef.current)) {
+            loadMpPuzzle(data.room.you.puzzleIdx);
+          }
+        } else {
+          rewind();
+        }
+      } catch {
+        rewind();
+      }
+    },
+    [cacheMpPuzzles, loadMpPuzzle, target]
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (didRestoreSeatRef.current) return;
+    didRestoreSeatRef.current = true;
+    const q = new URLSearchParams(window.location.search).get("room");
+    const seat = loadMpSeat();
+    if (!seat) {
+      if (q) {
+        setMpPrefillRoom(q);
+        setScreen("mp-hub");
+      }
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          buildApiUrl(`/api/rooms/${seat.roomId}?playerId=${seat.playerId}`, target),
+          { cache: "no-store" }
+        );
+        const data = (await res.json()) as { room?: RoomStateView };
+        if (cancelled) return;
+        if (res.ok && data.room) {
+          setMpPlayerId(data.room.you.playerId);
+          mpPlayerIdRef.current = data.room.you.playerId;
+          mpRoomIdRef.current = data.room.id;
+          applyRoomSnapshotRef.current(data.room);
+          return;
+        }
+        if (cancelled) return;
+        if (res.status === 404 || res.status === 403) {
+          clearMpSeat();
+        }
+      } catch {
+        // keep seat; user can retry from the hub
+      }
+      if (cancelled) return;
+      setMpPrefillRoom(q || seat.roomName);
+      setScreen("mp-hub");
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [target]);
+
+  useEffect(() => {
+    waitingPracticeRef.current = waitingPractice;
+  }, [waitingPractice]);
+
+  useEffect(() => {
+    const roomId = mpRoomIdRef.current;
+    const playerId = mpPlayerIdRef.current;
+    if (!roomId || !playerId) return;
+    const inRoom =
+      screen === "mp-lobby" ||
+      screen === "mp-wait" ||
+      screen === "mp-results" ||
+      screen === "review" ||
+      (screen === "play" && (mode === "multiplayer" || waitingPractice));
+    if (!inRoom) return;
+
+    let cancelled = false;
+    const loopAc = new AbortController();
+    let refreshAc = new AbortController();
+    const leaveRoomQuietly = (popup: { title: string; body?: string }) => {
+      mpClear();
+      setHomePopup(popup);
+      setScreen("home");
+    };
+    const loop = async () => {
+      let immediate = true;
+      while (!cancelled && !loopAc.signal.aborted) {
+        const since = mpSyncRef.current;
+        const params = new URLSearchParams({ playerId });
+        if (!immediate && since) {
+          params.set("since", since);
+          params.set("waitMs", String(MP_LONG_POLL_MS));
+        }
+        immediate = false;
+        const signal = mergeAbortSignals([loopAc.signal, refreshAc.signal]);
+        try {
+          const res = await fetch(
+            buildApiUrl(`/api/rooms/${roomId}?${params.toString()}`, target),
+            { cache: "no-store", signal }
+          );
+          const data = (await res.json()) as {
+            room?: RoomStateView;
+            error?: string;
+            roomName?: string;
+            kickedBy?: string;
+          };
+          if (cancelled) return;
+          if (res.ok && data.room) {
+            mpPollFailsRef.current = 0;
+            if (data.room.sync) mpSyncRef.current = data.room.sync;
+            applyRoomSnapshot(data.room);
+            if (!data.room.sync) {
+              await abortableSleep(1000, loopAc.signal);
+            }
+            continue;
+          }
+          if (data.error === "kicked") {
+            const roomName = data.roomName || mpRoom?.name || "the room";
+            const kickedBy = data.kickedBy;
+            leaveRoomQuietly({
+              title: `You were removed from ${roomName}.`,
+              body: kickedBy ? `Removed by ${kickedBy}.` : undefined,
+            });
+            return;
+          }
+          if (res.status === 404 || res.status === 403) {
+            mpPollFailsRef.current += 1;
+            if (mpPollFailsRef.current >= 2) {
+              const roomName = mpRoom?.name;
+              leaveRoomQuietly({
+                title: roomName ? `${roomName} closed.` : "That room closed.",
+              });
+              return;
+            }
+            await abortableSleep(300, loopAc.signal);
+            continue;
+          }
+          await abortableSleep(250, loopAc.signal);
+        } catch {
+          if (cancelled || loopAc.signal.aborted) return;
+          if (refreshAc.signal.aborted) {
+            refreshAc = new AbortController();
+            immediate = true;
+            continue;
+          }
+          await abortableSleep(250, loopAc.signal);
+        }
+      }
+    };
+    void loop();
+    const onVis = () => {
+      if (document.visibilityState !== "visible") return;
+      refreshAc.abort();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      cancelled = true;
+      loopAc.abort();
+      refreshAc.abort();
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [applyRoomSnapshot, mpClear, mpRoom?.id, mpRoom?.name, mpPlayerId, screen, mode, waitingPractice, target]);
+
+  useEffect(() => {
+    const onHide = () => {
+      const roomId = mpRoomIdRef.current;
+      const playerId = mpPlayerIdRef.current;
+      if (!roomId || !playerId) return;
+      const url = buildApiUrl(`/api/rooms/${roomId}`, target);
+      const blob = new Blob(
+        [JSON.stringify({ action: "heartbeat", playerId })],
+        { type: "application/json" }
+      );
+      navigator.sendBeacon(url, blob);
+    };
+    window.addEventListener("pagehide", onHide);
+    return () => window.removeEventListener("pagehide", onHide);
+  }, [target]);
+
+  const hostNeedsSuccessor =
+    !!mpRoom?.you.isHost &&
+    mpRoom.players.some((p) => p.id && p.id !== mpRoom.you.playerId);
+
+  const finishSoloSession = useCallback(() => {
+    setLeaveConfirmOpen(false);
     setTimerRunning(false);
     setScreen("summary");
 
@@ -488,6 +1077,28 @@ export default function Home() {
       date: new Date().toISOString(),
     });
   }, [mode, playElapsedMs, sprintRemainingMs, solved]);
+
+  const confirmLeave = useCallback(() => {
+    setLeaveConfirmOpen(false);
+    if (mpPlayerIdRef.current) {
+      if (hostNeedsSuccessor) {
+        setMpHostLeaveOpen(true);
+        return;
+      }
+      void mpLeave();
+      return;
+    }
+    finishSoloSession();
+  }, [mpLeave, hostNeedsSuccessor, finishSoloSession]);
+
+  const handleQuit = useCallback(() => {
+    if (mpHostLeaveOpen) return;
+    if (leaveConfirmOpen) {
+      confirmLeave();
+      return;
+    }
+    setLeaveConfirmOpen(true);
+  }, [mpHostLeaveOpen, leaveConfirmOpen, confirmLeave]);
 
   const handleTimeUp = useCallback(() => {
     setTimerRunning(false);
@@ -626,6 +1237,10 @@ export default function Home() {
     if (alive.length === 1) {
       const goalRat = rat(puzzle!.goal);
       if (eq(alive[0].value, goalRat)) {
+        if (mode === "multiplayer") {
+          void mpSubmitSolve(resultExpr);
+          return;
+        }
         setTimerRunning(false);
         const elapsed =
           mode === "practice"
@@ -692,7 +1307,7 @@ export default function Home() {
 
   const handleContinue = () => {
     if (mode === "sprint" && sprintRemainingMs <= 0) {
-      handleQuit();
+      finishSoloSession();
       return;
     }
 
@@ -734,7 +1349,7 @@ export default function Home() {
             !Array.isArray(data.cards)
           ) {
             // Session ended or failed – end the sprint gracefully.
-            handleQuit();
+            finishSoloSession();
             return;
           }
 
@@ -771,7 +1386,7 @@ export default function Home() {
             }, 0);
           }
         } catch {
-          handleQuit();
+          finishSoloSession();
         }
       })();
       return;
@@ -781,6 +1396,7 @@ export default function Home() {
   };
 
   const handleSkip = useCallback(() => {
+    if (mode === "multiplayer") return;
     if (!puzzle || !board) return;
     const now = Date.now();
     if (now - skipDebounceRef.current < 400) return;
@@ -830,6 +1446,18 @@ export default function Home() {
   };
 
   useEffect(() => {
+    if (!mpPopup) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setMpPopup(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [mpPopup]);
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
@@ -839,12 +1467,29 @@ export default function Home() {
       const rawKey = e.key;
       const key = rawKey.toLowerCase();
 
-      // Global quit from play/review: Escape
-      if ((screen === "play" || screen === "review") && (rawKey === "Escape" || key === "escape")) {
+      // Global quit from play/review/wait: Escape
+      if (
+        (screen === "play" || screen === "review" || screen === "mp-wait") &&
+        (rawKey === "Escape" || key === "escape")
+      ) {
         e.preventDefault();
-        handleQuit();
+        if (mpHostLeaveOpen) {
+          setMpHostLeaveOpen(false);
+          return;
+        }
+        if (mpEndConfirmOpen) {
+          setMpEndConfirmOpen(false);
+          return;
+        }
+        if (leaveConfirmOpen) {
+          confirmLeave();
+          return;
+        }
+        setLeaveConfirmOpen(true);
         return;
       }
+
+      if (leaveConfirmOpen || mpHostLeaveOpen || mpEndConfirmOpen) return;
 
       // Review: space = Continue
       if (screen === "review" && rawKey === " ") {
@@ -855,20 +1500,28 @@ export default function Home() {
 
       if (screen !== "play") return;
 
-      // Card selection: 1-6 map to the 6 card slots (top row 1–3, bottom row 4–6).
-      if (key >= "1" && key <= "6") {
+      const code = e.code;
+
+      // Card selection via physical keys (event.code):
+      // Main keyboard: 1–3 top row, Q/W/E bottom row.
+      // Numpad: 4–6 top row, 1–3 bottom row (unchanged).
+      const tileByCode: Record<string, number> = {
+        Digit1: 0,
+        Digit2: 1,
+        Digit3: 2,
+        KeyQ: 3,
+        KeyW: 4,
+        KeyE: 5,
+        Numpad4: 0,
+        Numpad5: 1,
+        Numpad6: 2,
+        Numpad1: 3,
+        Numpad2: 4,
+        Numpad3: 5,
+      };
+      if (code in tileByCode) {
         if (!board) return;
-        const n = Number(key);
-        let index: number | null = null;
-        if (useNumpadMapping) {
-          // Numpad-style: 1–3 bottom row, 4–6 top row (all left→right)
-          const map: (number | null)[] = [null, 3, 4, 5, 0, 1, 2];
-          index = map[n] ?? null;
-        } else {
-          // Default: 1–3 top row, 4–6 bottom row (all left→right)
-          index = n - 1;
-        }
-        if (index == null) return;
+        const index = tileByCode[code];
         if (index < 0 || index >= board.tiles.length) return;
         if (!board.tiles[index].alive) return;
         e.preventDefault();
@@ -876,42 +1529,37 @@ export default function Home() {
         return;
       }
 
-      // Ops: q=+, w=−, e=×, r=÷
-      if (key === "q") {
+      // Ops: a=+, s=−, d=×, f=÷ (letter keys; numpad ops unchanged — none bound)
+      if (code === "KeyA") {
         e.preventDefault();
         handleOpClick("+");
         return;
       }
-      if (key === "w") {
+      if (code === "KeyS") {
         e.preventDefault();
         handleOpClick("-");
         return;
       }
-      if (key === "e") {
+      if (code === "KeyD") {
         e.preventDefault();
         handleOpClick("*");
         return;
       }
-      if (key === "r") {
+      if (code === "KeyF") {
         e.preventDefault();
         handleOpClick("/");
         return;
       }
 
-      // Actions primary: a=undo, s=reset, d=skip
-      if (key === "a") {
+      // Actions: z=undo, x=reset
+      if (code === "KeyZ") {
         e.preventDefault();
         handleUndo();
         return;
       }
-      if (key === "s") {
+      if (code === "KeyX") {
         e.preventDefault();
         handleReset();
-        return;
-      }
-      if (key === "d") {
-        e.preventDefault();
-        handleSkip();
         return;
       }
 
@@ -919,14 +1567,182 @@ export default function Home() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [screen, board, useNumpadMapping, handleQuit, handleTileClick, handleOpClick, handleUndo, handleReset, handleSkip, handleContinue]);
+  }, [screen, board, handleQuit, handleTileClick, handleOpClick, handleUndo, handleReset, handleContinue, leaveConfirmOpen, mpHostLeaveOpen, mpEndConfirmOpen, confirmLeave]);
 
   const timerDisplay =
-    mode === "practice" ? formatTime(playElapsedMs) : formatTime(sprintRemainingMs);
+    mode === "practice" && !waitingPractice
+      ? formatTime(playElapsedMs)
+      : formatTime(sprintRemainingMs);
+
+  const mpLeaderNote =
+    waitingPractice && mpRoom ? "Waiting for round to end" : null;
+
+  const mpStandings = (() => {
+    if (!mpRoom || (mode !== "multiplayer" && !waitingPractice)) return null;
+    const youName = mpRoom.you.name;
+    const ranked = [...mpRoom.players]
+      .filter((p) => p.participated)
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          (a.scoreReachedAt ?? Number.MAX_SAFE_INTEGER) -
+            (b.scoreReachedAt ?? Number.MAX_SAFE_INTEGER)
+      );
+    const you =
+      ranked.find((p) => p.name === youName) ??
+      (mpRoom.you.participated
+        ? { name: youName, score: mpRoom.you.score }
+        : null);
+
+    const toRow = (p: { name: string; score: number }) => ({
+      name: p.name,
+      score: p.score,
+      isYou: p.name === youName,
+    });
+
+    if (ranked.length === 0) return you ? [toRow(you)] : null;
+    if (ranked.every((p) => p.score === 0)) {
+      return you ? [toRow({ name: youName, score: 0 })] : null;
+    }
+
+    const top = ranked.slice(0, 3);
+    const rows = top.map(toRow);
+    if (you && !top.some((p) => p.name === youName)) {
+      rows.push(toRow(you));
+    }
+    return rows;
+  })();
+
+  const mpPlayNotice = mpActionError;
+
+  const showHostEndRound =
+    mode === "multiplayer" && !waitingPractice && !!mpRoom?.you.isHost;
+
+  const hostEndRoundUi = showHostEndRound ? (
+    <>
+      <div className="w-full max-w-sm mx-auto px-4 py-2">
+        <button
+          type="button"
+          onClick={() => setMpEndConfirmOpen(true)}
+          className="w-full h-10 rounded-xl border border-neutral-300 text-sm font-medium text-neutral-600 active:bg-neutral-50"
+        >
+          End round
+        </button>
+      </div>
+      {mpEndConfirmOpen && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-30">
+          <div className="bg-white rounded-2xl w-full max-w-sm p-4">
+            <div className="font-semibold mb-1">End this round?</div>
+            <p className="text-sm text-neutral-500 mb-4">
+              Everyone will go to results with their scores so far. This cannot be undone.
+            </p>
+            <button
+              type="button"
+              disabled={mpEnding}
+              onClick={() => void mpEndRound()}
+              className="w-full h-12 mb-2 rounded-xl bg-neutral-900 text-white font-medium disabled:bg-neutral-200 disabled:text-neutral-500"
+            >
+              {mpEnding ? "Ending…" : "End round"}
+            </button>
+            <button
+              type="button"
+              disabled={mpEnding}
+              onClick={() => setMpEndConfirmOpen(false)}
+              className="w-full h-11 rounded-xl border border-neutral-200 text-sm text-neutral-500"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  ) : null;
+
+  const sessionLeaveUi = (
+    <>
+      {leaveConfirmOpen && (
+        <ConfirmSheet
+          title={mpPlayerId ? "Leave?" : "Quit?"}
+          body={
+            mpPlayerId
+              ? "You'll leave this room."
+              : "Your session will end and you'll see your summary."
+          }
+          confirmLabel={mpPlayerId ? "Leave" : "Quit"}
+          onConfirm={confirmLeave}
+          onCancel={() => setLeaveConfirmOpen(false)}
+        />
+      )}
+      {mpHostLeaveOpen && mpRoom && (
+        <div
+          className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-30"
+          onClick={() => setMpHostLeaveOpen(false)}
+        >
+          <div
+            className="bg-white rounded-2xl w-full max-w-sm p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="font-semibold mb-1">Choose a new host</div>
+            <p className="text-sm text-neutral-500 mb-3">
+              Pick who should host after you leave.
+            </p>
+            <div className="flex flex-col gap-2 mb-3">
+              {mpRoom.players
+                .filter((p) => p.id && p.id !== mpRoom.you.playerId)
+                .map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => {
+                      setMpHostLeaveOpen(false);
+                      void mpLeave(p.id);
+                    }}
+                    className="w-full h-11 rounded-xl border border-neutral-300 text-sm font-medium"
+                  >
+                    {p.name}
+                  </button>
+                ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setMpHostLeaveOpen(false)}
+              className="w-full h-11 rounded-xl border border-neutral-200 text-sm text-neutral-500"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {mpPopup && (
+        <div
+          className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-30"
+          onClick={() => setMpPopup(null)}
+        >
+          <div
+            className="bg-white rounded-2xl w-full max-w-sm p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="font-semibold mb-4">{mpPopup.title}</div>
+            {mpPopup.body ? (
+              <p className="text-sm text-neutral-500 mb-4">{mpPopup.body}</p>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setMpPopup(null)}
+              className="w-full h-12 rounded-xl bg-neutral-900 text-white font-medium"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
 
   // HOME
   if (screen === "home") {
     return (
+      <>
       <div className="fixed inset-0 flex flex-col items-center justify-center px-6 overflow-y-auto"
         style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
         <h1 className="text-6xl sm:text-7xl md:text-8xl font-bold mb-6">67</h1>
@@ -946,25 +1762,36 @@ export default function Home() {
         <div className="flex flex-col gap-3 w-full max-w-xs">
           <button
             onClick={() => startSession("practice")}
-            className="h-14 sm:h-16 bg-neutral-900 text-white rounded-xl font-medium text-lg sm:text-xl active:bg-neutral-700 transition-colors"
+            className="h-14 sm:h-16 border-2 border-neutral-900 text-neutral-900 rounded-xl font-medium text-lg sm:text-xl active:bg-neutral-100 transition-colors"
           >
             Practice
           </button>
-          <div className="relative">
-            <button
-              onClick={() => startSession("sprint")}
-              className="w-full h-14 sm:h-16 border-2 border-neutral-900 text-neutral-900 rounded-xl font-medium text-lg sm:text-xl active:bg-neutral-100 transition-colors"
-            >
-              5-Minute Sprint
-            </button>
-            <SprintInfoHint />
-          </div>
           <button
-            onClick={() => setScreen("leaderboard")}
-            className="h-12 border-2 border-neutral-300 text-neutral-700 rounded-xl font-medium active:bg-neutral-100 transition-colors"
+            onClick={() => {
+              setHomePopup(null);
+              setScreen("mp-hub");
+            }}
+            className="h-14 sm:h-16 border-2 border-neutral-900 text-neutral-900 rounded-xl font-medium text-lg sm:text-xl active:bg-neutral-100 transition-colors"
           >
-            Leaderboard
+            Multiplayer
           </button>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="relative">
+              <button
+                onClick={() => startSession("sprint")}
+                className="w-full h-14 sm:h-16 border-2 border-neutral-900 text-neutral-900 rounded-xl font-medium text-sm sm:text-base active:bg-neutral-100 transition-colors"
+              >
+                5-min Sprint
+              </button>
+              <SprintInfoHint />
+            </div>
+            <button
+              onClick={() => setScreen("leaderboard")}
+              className="h-14 sm:h-16 border-2 border-neutral-900 text-neutral-900 rounded-xl font-medium text-sm sm:text-base active:bg-neutral-100 transition-colors"
+            >
+              Leaderboard
+            </button>
+          </div>
           {isDev && (
             <Link
               href="/admin"
@@ -1003,6 +1830,115 @@ export default function Home() {
           </div>
         )}
       </div>
+      {homePopup && (
+        <div
+          className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-30"
+          onClick={() => setHomePopup(null)}
+        >
+          <div
+            className="bg-white rounded-2xl w-full max-w-sm p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="font-semibold mb-1">{homePopup.title}</div>
+            {homePopup.body ? (
+              <p className="text-sm text-neutral-500 mb-4">{homePopup.body}</p>
+            ) : (
+              <div className="mb-4" />
+            )}
+            <button
+              type="button"
+              onClick={() => setHomePopup(null)}
+              className="w-full h-12 rounded-xl bg-neutral-900 text-white font-medium"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+      </>
+    );
+  }
+
+  // MULTIPLAYER HUB
+  if (screen === "mp-hub") {
+    return (
+      <MultiplayerHub
+        target={target}
+        initialRoomName={mpPrefillRoom}
+        onEntered={mpEntered}
+        onBack={() => {
+          setMpPrefillRoom(null);
+          if (typeof window !== "undefined") window.history.replaceState(null, "", "/");
+          setScreen("home");
+        }}
+      />
+    );
+  }
+
+  // MULTIPLAYER LOBBY
+  if (screen === "mp-lobby" && mpRoom) {
+    return (
+      <>
+        <RoomLobby
+          room={mpRoom}
+          onStart={() => void mpStart()}
+          onSetDuration={(ms) => void mpSetDuration(ms)}
+          onLeave={(newHostId) => void mpLeave(newHostId)}
+          onKick={(id) => void mpKick(id)}
+          starting={mpStarting}
+          actionError={mpActionError}
+        />
+        {sessionLeaveUi}
+      </>
+    );
+  }
+
+  // MULTIPLAYER WAITING
+  if (screen === "mp-wait" && mpRoom) {
+    return (
+      <>
+        <RoomWaiting
+          roomName={mpRoom.name}
+          timerDisplay={timerDisplay}
+          waitingOnly={mpWaitIdle}
+          standings={mpStandings}
+          onPractice={() => {
+            setMpWaitIdle(false);
+            setWaitingPractice(true);
+            waitingPracticeRef.current = true;
+            setMode("practice");
+            setSolvedCount(0);
+            setSkippedCount(0);
+            setSolved([]);
+            setSkipped([]);
+            sessionIndexRef.current = 1;
+            setPlayElapsedMs(0);
+            setScreen("play");
+            startNewPuzzle();
+          }}
+          onWait={() => setMpWaitIdle(true)}
+          onLeave={handleQuit}
+        />
+        {sessionLeaveUi}
+      </>
+    );
+  }
+
+  // MULTIPLAYER RESULTS
+  if (screen === "mp-results" && mpRoom) {
+    return (
+      <>
+        <RoomResults
+          room={mpRoom}
+          onStart={() => void mpStart()}
+          onSetDuration={(ms) => void mpSetDuration(ms)}
+          onLeave={(newHostId) => void mpLeave(newHostId)}
+          onKick={(id) => void mpKick(id)}
+          starting={mpStarting}
+          actionError={mpActionError}
+        />
+        {sessionLeaveUi}
+      </>
     );
   }
 
@@ -1049,6 +1985,10 @@ export default function Home() {
           timerDisplay={timerDisplay}
           onQuit={handleQuit}
           showShortcuts={showShortcuts}
+          quitLabel={mpPlayerId ? "Leave" : "Quit"}
+          leaderNote={mpLeaderNote}
+          standings={mpStandings}
+          notice={mpPlayNotice}
         />
         <div className="flex-1 overflow-y-auto">
           <ReviewPanel
@@ -1063,6 +2003,7 @@ export default function Home() {
             isSprintEnding={isSprintEnding}
           />
         </div>
+        {sessionLeaveUi}
       </div>
     );
   }
@@ -1074,9 +2015,15 @@ export default function Home() {
         <TopBar
           solvedCount={solvedCount}
           timerDisplay={timerDisplay}
-          onQuit={handleHome}
+          onQuit={handleQuit}
           showShortcuts={showShortcuts}
+          quitLabel={mpPlayerId ? "Leave" : "Quit"}
+          leaderNote={mpLeaderNote}
+          standings={mpStandings}
+          notice={mpPlayNotice}
         />
+        {hostEndRoundUi}
+        {sessionLeaveUi}
         <div className="flex-1 flex items-center justify-center">
           <span className="text-neutral-400 text-sm">Generating next problem…</span>
         </div>
@@ -1098,7 +2045,13 @@ export default function Home() {
           timerDisplay={timerDisplay}
           onQuit={handleQuit}
           showShortcuts={showShortcuts}
+          quitLabel={mpPlayerId ? "Leave" : "Quit"}
+          leaderNote={mpLeaderNote}
+          standings={mpStandings}
+          notice={mpPlayNotice}
         />
+        {hostEndRoundUi}
+        {sessionLeaveUi}
 
         {generating ? (
           <div className="flex-1 flex items-center justify-center">
@@ -1117,7 +2070,6 @@ export default function Home() {
               useFaceCards={useFaceCards}
               showShortcuts={showShortcuts}
               highlightWrong={wrongAnswer}
-              useNumpadMapping={useNumpadMapping}
             />
 
             {/* Ops */}
@@ -1137,7 +2089,7 @@ export default function Home() {
               >
                 <div className="flex flex-col items-center justify-center leading-tight">
                   {showShortcuts && (
-                    <span className="text-[11px] text-neutral-400">a</span>
+                    <span className="text-[11px] text-neutral-400">Z</span>
                   )}
                   <span>Undo</span>
                 </div>
@@ -1148,24 +2100,23 @@ export default function Home() {
               >
                 <div className="flex flex-col items-center justify-center leading-tight">
                   {showShortcuts && (
-                    <span className="text-[11px] text-neutral-400">s</span>
+                    <span className="text-[11px] text-neutral-400">X</span>
                   )}
                   <span>Reset</span>
                 </div>
               </button>
+              {mode !== "multiplayer" && (
               <button
                 onClick={handleSkip}
                 className="flex-1 min-w-0 h-16 text-base sm:text-lg font-medium rounded-xl border-2 border-neutral-300 text-neutral-600 active:bg-neutral-100 transition-colors"
               >
                 <div className="flex flex-col items-center justify-center leading-tight">
-                  {showShortcuts && (
-                    <span className="text-[11px] text-neutral-400">d</span>
-                  )}
                   <span className="text-sm sm:text-base">
                     {mode === "sprint" ? "Skip (-20 sec)" : "Skip"}
                   </span>
                 </div>
               </button>
+              )}
             </div>
 
             {/* Toggles */}
@@ -1190,30 +2141,6 @@ export default function Home() {
                     <span
                       className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
                         showShortcuts ? "translate-x-5" : "translate-x-1"
-                      }`}
-                    />
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={(e) => {
-                    setUseNumpadMapping((v) => !v);
-                    (e.currentTarget as HTMLButtonElement).blur();
-                  }}
-                  className="w-full flex items-center justify-between px-3 py-2 rounded-xl border border-neutral-200 bg-white active:bg-neutral-50 focus:outline-none focus-visible:outline-none"
-                >
-                  <span>Use numpad for cards</span>
-                  <span
-                    aria-hidden
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                      useNumpadMapping ? "bg-neutral-900" : "bg-neutral-200"
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                        useNumpadMapping ? "translate-x-5" : "translate-x-1"
                       }`}
                     />
                   </span>
@@ -1261,6 +2188,7 @@ export default function Home() {
 
           </div>
         )}
+
       </div>
     );
   }

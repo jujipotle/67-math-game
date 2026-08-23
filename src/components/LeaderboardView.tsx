@@ -60,7 +60,12 @@ export default function LeaderboardView({ onBack, target, initialEntries }: Lead
           Back
         </button>
 
-        <LeaderboardTable entries={entries} loading={loading} error={error} />
+        <LeaderboardTable
+          entries={entries}
+          loading={loading}
+          error={error}
+          footnote="Tied scores are ordered by who submitted that score first."
+        />
       </div>
     </div>
   );

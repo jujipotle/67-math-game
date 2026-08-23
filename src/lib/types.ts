@@ -44,8 +44,80 @@ export type SkippedRecord = {
   solutionsPending?: boolean;
 };
 
-export type Mode = "practice" | "sprint";
-export type Screen = "home" | "play" | "review" | "summary" | "leaderboard";
+export type Mode = "practice" | "sprint" | "multiplayer";
+export type Screen =
+  | "home"
+  | "play"
+  | "review"
+  | "summary"
+  | "leaderboard"
+  | "mp-hub"
+  | "mp-lobby"
+  | "mp-wait"
+  | "mp-results";
+
+export type RoomStatus = "lobby" | "playing" | "results";
+export type RoomPlayerRole = "active" | "waiting";
+
+export type RoomListItem = {
+  id: string;
+  name: string;
+  hostName: string;
+  isPrivate: boolean;
+  status: RoomStatus;
+  playerCount: number;
+  playerNames: string[];
+};
+
+export type RoomPlayerView = {
+  id: string;
+  name: string;
+  isHost: boolean;
+  role: RoomPlayerRole;
+  score: number;
+  scoreReachedAt: number | null;
+  participated: boolean;
+};
+
+export type RoomPuzzleView = {
+  idx: number;
+  goal: number;
+  cards: number[];
+};
+
+export type RoomLeaderView = {
+  name: string;
+  score: number;
+  isYou: boolean;
+} | null;
+
+export type RoomStateView = {
+  id: string;
+  name: string;
+  status: RoomStatus;
+  isPrivate: boolean;
+  hostId: string;
+  hostName: string;
+  round: number;
+  roundStartedAt: number | null;
+  roundEndsAt: number | null;
+  roundDurationMs: number;
+  you: {
+    playerId: string;
+    name: string;
+    isHost: boolean;
+    role: RoomPlayerRole;
+    score: number;
+    puzzleIdx: number;
+    participated: boolean;
+  };
+  players: RoomPlayerView[];
+  leader: RoomLeaderView;
+  puzzles: RoomPuzzleView[];
+  /** Opaque cursor for long-poll; pass back as `since` on the next GET. */
+  sync: string;
+};
+
 
 export type SessionState = {
   mode: Mode;

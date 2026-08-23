@@ -169,6 +169,7 @@ export default function SummaryView({
               loading={lbLoading}
               error={lbError}
               highlightScore={submitOk ? submitOk.score : userScore}
+              footnote="Tied scores are ordered by who submitted that score first."
             />
           </div>
         )}

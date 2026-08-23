@@ -35,8 +35,14 @@ type LeaderboardTableProps = {
   entries: LeaderboardEntry[];
   loading?: boolean;
   error?: string | null;
-  /** If set, shows "Your score: X (would be #Y)" above the table. */
+  /** If set, shows "Your score: X (would be/placed #Y)" above the table. */
   highlightScore?: number;
+  highlightName?: string;
+  /** Default "would be" for the global sprint board; room results use "placed". */
+  rankPhrase?: "would be" | "placed";
+  footnote?: string;
+  /** Collapsed view shows this many score tiers. Default 10. */
+  previewLimit?: number;
 };
 
 export default function LeaderboardTable({
@@ -44,14 +50,18 @@ export default function LeaderboardTable({
   loading = false,
   error = null,
   highlightScore,
+  highlightName,
+  rankPhrase = "would be",
+  footnote,
+  previewLimit = 10,
 }: LeaderboardTableProps) {
   const [showAll, setShowAll] = useState(false);
 
   const tiers = useMemo(() => groupLeaderboardByScore(entries), [entries]);
-  const visibleTiers = showAll ? tiers : tiers.slice(0, 3);
+  const visibleTiers = showAll ? tiers : tiers.slice(0, previewLimit);
 
   const userRank =
-    highlightScore != null && highlightScore > 0 && tiers.length > 0
+    highlightScore != null && tiers.length > 0
       ? 1 + tiers.filter((t) => t.score > highlightScore).length
       : null;
 
@@ -69,13 +79,13 @@ export default function LeaderboardTable({
 
   return (
     <div className="w-full">
-      {highlightScore != null && highlightScore > 0 && (
+      {highlightScore != null && (
         <div className="text-sm text-neutral-600 mb-3">
           Your score: <span className="font-semibold">{highlightScore}</span>
           {userRank != null && (
             <>
               {" "}
-              (would be <span className="font-semibold">#{userRank}</span>)
+              ({rankPhrase} <span className="font-semibold">#{userRank}</span>)
             </>
           )}
         </div>
@@ -99,7 +109,20 @@ export default function LeaderboardTable({
                   {tier.score}
                 </td>
                 <td className="py-2.5 px-4 text-neutral-700">
-                  {tier.entries.map((e) => e.name).join(", ")}
+                  {tier.entries.map((e, j) => (
+                    <span key={e.id}>
+                      {j > 0 ? ", " : ""}
+                      <span
+                        className={
+                          highlightName && e.name === highlightName
+                            ? "font-semibold text-neutral-900"
+                            : undefined
+                        }
+                      >
+                        {e.name}
+                      </span>
+                    </span>
+                  ))}
                 </td>
               </tr>
             ))}
@@ -107,14 +130,20 @@ export default function LeaderboardTable({
         </table>
       </div>
 
-      {tiers.length > 3 && (
+      {tiers.length > previewLimit && (
         <button
           type="button"
           onClick={() => setShowAll((v) => !v)}
           className="mt-3 w-full h-10 text-sm font-medium text-neutral-600 border border-neutral-200 rounded-xl active:bg-neutral-50 transition-colors"
         >
-          {showAll ? "Show top 3" : `Show all (${entries.length})`}
+          {showAll ? `Show top ${previewLimit}` : `Show all (${entries.length})`}
         </button>
+      )}
+
+      {footnote && (
+        <p className="mt-3 text-xs text-neutral-400 text-center leading-relaxed">
+          {footnote}
+        </p>
       )}
     </div>
   );

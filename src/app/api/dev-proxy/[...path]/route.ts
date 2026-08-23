@@ -38,12 +38,24 @@ async function handle(
   const target = url.searchParams.get("target") === "production" ? "production" : "local";
   const base = target === "production" ? PROD_BASE : url.origin;
 
+  const method = req.method;
   const forwardParams = new URLSearchParams(url.search);
   forwardParams.delete("target");
+
+  if (method === "GET" && route === "rooms/admin") {
+    const adminKey = process.env.LEADERBOARD_ADMIN_KEY;
+    if (!adminKey) {
+      return NextResponse.json(
+        { error: "LEADERBOARD_ADMIN_KEY is not set in your .env" },
+        { status: 501 }
+      );
+    }
+    forwardParams.set("adminKey", adminKey);
+  }
+
   const qs = forwardParams.toString();
   const downstream = `${base}/api/${route}${qs ? `?${qs}` : ""}`;
 
-  const method = req.method;
   const headers: Record<string, string> = {};
   let body: string | undefined;
 
@@ -52,8 +64,11 @@ async function handle(
     const payload: Record<string, unknown> =
       raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : {};
 
-    // Inject the admin key for privileged leaderboard ops (never sent by client).
-    if (route === "leaderboard" && (method === "DELETE" || method === "PATCH")) {
+    // Inject the admin key for privileged ops (never sent by the browser).
+    const needsAdminKey =
+      (route === "leaderboard" && (method === "DELETE" || method === "PATCH")) ||
+      (route.startsWith("rooms/") && method === "DELETE");
+    if (needsAdminKey) {
       const adminKey = process.env.LEADERBOARD_ADMIN_KEY;
       if (!adminKey) {
         return NextResponse.json(
@@ -69,7 +84,13 @@ async function handle(
   }
 
   try {
-    const res = await fetch(downstream, { method, headers, body, cache: "no-store" });
+    const res = await fetch(downstream, {
+      method,
+      headers,
+      body,
+      cache: "no-store",
+      signal: req.signal,
+    });
     const data = await res.json().catch(() => ({}));
     return NextResponse.json(data, { status: res.status });
   } catch {
