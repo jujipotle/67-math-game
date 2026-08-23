@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { buildApiUrl } from "@/lib/api";
-import type { DataTarget } from "@/lib/dataSource";
+import { isDev, type DataTarget } from "@/lib/dataSource";
 import type { RoomListItem, RoomStateView } from "@/lib/types";
 
 type MultiplayerHubProps = {
@@ -43,9 +43,9 @@ export default function MultiplayerHub({
         error?: string;
       };
       if (!res.ok) {
-        if (target === "production" && (res.status === 404 || res.status === 502)) {
+        if (isDev && target === "production" && (res.status === 404 || res.status === 502)) {
           throw new Error(
-            "Multiplayer isn’t on the live site yet. Switch Data source to Local on the home screen."
+            "Couldn’t reach live multiplayer. Switch Data source to Local on the home screen, or try again."
           );
         }
         throw new Error(data.error || "Failed to load rooms");
@@ -82,9 +82,9 @@ export default function MultiplayerHub({
       });
       const data = (await res.json().catch(() => ({}))) as { room?: RoomStateView; error?: string };
       if (!res.ok || !data.room) {
-        if (target === "production" && (res.status === 404 || res.status === 502)) {
+        if (isDev && target === "production" && (res.status === 404 || res.status === 502)) {
           throw new Error(
-            "Multiplayer isn’t on the live site yet. Switch Data source to Local on the home screen."
+            "Couldn’t reach live multiplayer. Switch Data source to Local on the home screen, or try again."
           );
         }
         throw new Error(data.error || "Could not create room");
@@ -192,10 +192,11 @@ export default function MultiplayerHub({
     joinByName(initialRoomName, showInvitePassword ? invitePassword : undefined);
   };
 
-  const productionWarning = target === "production" && (
+  /** Only relevant in local `npm run dev` when Data source is Actual. */
+  const productionWarning = isDev && target === "production" && (
     <div className="w-full mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-      Data source is <span className="font-semibold">Actual</span>. Multiplayer
-      only exists on your machine until you deploy. Switch to{" "}
+      Data source is <span className="font-semibold">Actual</span> — rooms load
+      from the live site. For offline testing, switch to{" "}
       <span className="font-semibold">Local</span> on the home screen.
     </div>
   );
