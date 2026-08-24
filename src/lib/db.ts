@@ -128,6 +128,16 @@ async function initNeonSchema(
       "createdAt" BIGINT NOT NULL
     )
   `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS room_solves (
+      "roomId" TEXT NOT NULL,
+      round INTEGER NOT NULL,
+      "playerId" TEXT NOT NULL,
+      idx INTEGER NOT NULL,
+      "finalExpr" TEXT NOT NULL,
+      PRIMARY KEY ("roomId", round, "playerId", idx)
+    )
+  `;
 }
 
 // ---- Neon (async) path ----
@@ -520,6 +530,14 @@ export function getSqliteDb(): Database.Database {
       roomName TEXT NOT NULL,
       kickedBy TEXT NOT NULL,
       createdAt INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS room_solves (
+      roomId TEXT NOT NULL,
+      round INTEGER NOT NULL,
+      playerId TEXT NOT NULL,
+      idx INTEGER NOT NULL,
+      finalExpr TEXT NOT NULL,
+      PRIMARY KEY (roomId, round, playerId, idx)
     );
   `);
   // Backfill kind column on existing SQLite databases that predate it.

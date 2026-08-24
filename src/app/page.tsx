@@ -1583,44 +1583,31 @@ export default function Home() {
   const showHostEndRound =
     mode === "multiplayer" && !waitingPractice && !!mpRoom?.you.isHost;
 
-  const hostEndRoundUi = showHostEndRound ? (
-    <>
-      <div className="w-full max-w-sm mx-auto px-4 py-2">
+  const hostEndRoundUi = showHostEndRound && mpEndConfirmOpen ? (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-30">
+      <div className="bg-white rounded-2xl w-full max-w-sm p-4">
+        <div className="font-semibold mb-1">End this round?</div>
+        <p className="text-sm text-neutral-500 mb-4">
+          Everyone will go to results with their scores so far. This cannot be undone.
+        </p>
         <button
           type="button"
-          onClick={() => setMpEndConfirmOpen(true)}
-          className="w-full h-10 rounded-xl border border-neutral-300 text-sm font-medium text-neutral-600 active:bg-neutral-50"
+          disabled={mpEnding}
+          onClick={() => void mpEndRound()}
+          className="w-full h-12 mb-2 rounded-xl bg-neutral-900 text-white font-medium disabled:bg-neutral-200 disabled:text-neutral-500"
         >
-          End round
+          {mpEnding ? "Ending…" : "End round"}
+        </button>
+        <button
+          type="button"
+          disabled={mpEnding}
+          onClick={() => setMpEndConfirmOpen(false)}
+          className="w-full h-11 rounded-xl border border-neutral-200 text-sm text-neutral-500"
+        >
+          Cancel
         </button>
       </div>
-      {mpEndConfirmOpen && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-30">
-          <div className="bg-white rounded-2xl w-full max-w-sm p-4">
-            <div className="font-semibold mb-1">End this round?</div>
-            <p className="text-sm text-neutral-500 mb-4">
-              Everyone will go to results with their scores so far. This cannot be undone.
-            </p>
-            <button
-              type="button"
-              disabled={mpEnding}
-              onClick={() => void mpEndRound()}
-              className="w-full h-12 mb-2 rounded-xl bg-neutral-900 text-white font-medium disabled:bg-neutral-200 disabled:text-neutral-500"
-            >
-              {mpEnding ? "Ending…" : "End round"}
-            </button>
-            <button
-              type="button"
-              disabled={mpEnding}
-              onClick={() => setMpEndConfirmOpen(false)}
-              className="w-full h-11 rounded-xl border border-neutral-200 text-sm text-neutral-500"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-    </>
+    </div>
   ) : null;
 
   const sessionLeaveUi = (
@@ -1968,6 +1955,7 @@ export default function Home() {
           solvedCount={solvedCount}
           timerDisplay={timerDisplay}
           onQuit={handleQuit}
+          onEndRound={showHostEndRound ? () => setMpEndConfirmOpen(true) : undefined}
           showShortcuts={showShortcuts}
           quitLabel={mpPlayerId ? "Leave" : "Quit"}
           leaderNote={mpLeaderNote}
@@ -1996,6 +1984,7 @@ export default function Home() {
           solvedCount={solvedCount}
           timerDisplay={timerDisplay}
           onQuit={handleQuit}
+          onEndRound={showHostEndRound ? () => setMpEndConfirmOpen(true) : undefined}
           showShortcuts={showShortcuts}
           quitLabel={mpPlayerId ? "Leave" : "Quit"}
           leaderNote={mpLeaderNote}
@@ -2018,6 +2007,7 @@ export default function Home() {
             <CardGrid
               tiles={board.tiles}
               selectedIndex={selectedTile}
+              hasOp={selectedOp !== null}
               onTileClick={handleTileClick}
               useFaceCards={useFaceCards}
               showShortcuts={showShortcuts}

@@ -39,6 +39,14 @@ export type RoomPuzzleRow = {
   cardsJson: string;
 };
 
+export type RoomSolveRow = {
+  roomId: string;
+  round: number;
+  playerId: string;
+  idx: number;
+  finalExpr: string;
+};
+
 function num(v: unknown): number {
   return Number(v);
 }
@@ -333,6 +341,7 @@ export async function updateRoom(
 export async function deleteRoomCascade(id: string): Promise<boolean> {
   if (useNeon) {
     const sql = await getNeon();
+    await sql`DELETE FROM room_solves WHERE "roomId" = ${id}`;
     await sql`DELETE FROM room_puzzles WHERE "roomId" = ${id}`;
     await sql`DELETE FROM room_players WHERE "roomId" = ${id}`;
     const rows = await sql`DELETE FROM rooms WHERE id = ${id} RETURNING id`;
@@ -340,6 +349,7 @@ export async function deleteRoomCascade(id: string): Promise<boolean> {
   }
   const d = getSqliteDb();
   const tx = d.transaction((roomId: string) => {
+    d.prepare(`DELETE FROM room_solves WHERE roomId = ?`).run(roomId);
     d.prepare(`DELETE FROM room_puzzles WHERE roomId = ?`).run(roomId);
     d.prepare(`DELETE FROM room_players WHERE roomId = ?`).run(roomId);
     return d.prepare(`DELETE FROM rooms WHERE id = ?`).run(roomId);
@@ -682,6 +692,49 @@ export async function consumeRoomKick(
   if (!row) return null;
   d.prepare(`DELETE FROM room_kicks WHERE playerId = ? AND roomId = ?`).run(playerId, roomId);
   return row;
+}
+
+export async function upsertRoomSolve(row: RoomSolveRow): Promise<void> {
+  if (useNeon) {
+    const sql = await getNeon();
+    await sql`
+      INSERT INTO room_solves ("roomId", round, "playerId", idx, "finalExpr")
+      VALUES (${row.roomId}, ${row.round}, ${row.playerId}, ${row.idx}, ${row.finalExpr})
+      ON CONFLICT ("roomId", round, "playerId", idx) DO UPDATE SET "finalExpr" = EXCLUDED."finalExpr"
+    `;
+    return;
+  }
+  getSqliteDb()
+    .prepare(
+      `INSERT INTO room_solves (roomId, round, playerId, idx, finalExpr)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (roomId, round, playerId, idx) DO UPDATE SET finalExpr = excluded.finalExpr`
+    )
+    .run(row.roomId, row.round, row.playerId, row.idx, row.finalExpr);
+}
+
+export async function listRoomSolvesForPlayer(
+  roomId: string,
+  round: number,
+  playerId: string
+): Promise<RoomSolveRow[]> {
+  if (useNeon) {
+    const sql = await getNeon();
+    const rows = await sql`
+      SELECT "roomId" as "roomId", round, "playerId" as "playerId", idx,
+             "finalExpr" as "finalExpr"
+      FROM room_solves
+      WHERE "roomId" = ${roomId} AND round = ${round} AND "playerId" = ${playerId}
+      ORDER BY idx ASC
+    `;
+    return rows as RoomSolveRow[];
+  }
+  return getSqliteDb()
+    .prepare(
+      `SELECT roomId, round, playerId, idx, finalExpr FROM room_solves
+       WHERE roomId = ? AND round = ? AND playerId = ? ORDER BY idx ASC`
+    )
+    .all(roomId, round, playerId) as RoomSolveRow[];
 }
 
 export async function expireRoomKicks(now: number, maxAgeMs: number): Promise<void> {

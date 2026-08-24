@@ -10,6 +10,7 @@ type TopBarProps = {
   solvedCount: number;
   timerDisplay: string;
   onQuit: () => void;
+  onEndRound?: () => void;
   showShortcuts?: boolean;
   quitLabel?: string;
   leaderNote?: string | null;
@@ -21,6 +22,7 @@ export default function TopBar({
   solvedCount,
   timerDisplay,
   onQuit,
+  onEndRound,
   showShortcuts,
   quitLabel = "Quit",
   leaderNote,
@@ -39,13 +41,24 @@ export default function TopBar({
         <span className="text-xl font-mono font-semibold tabular-nums">
           {timerDisplay}
         </span>
-        <button
-          type="button"
-          onClick={onQuit}
-          className="min-w-[3.25rem] h-7 px-2.5 rounded-md border border-neutral-300 bg-white text-sm font-medium leading-none text-neutral-700 active:bg-neutral-50 transition-colors"
-        >
-          {quitLabel}
-        </button>
+        <div className="flex items-center gap-1.5 min-w-[4.5rem] justify-end">
+          {onEndRound ? (
+            <button
+              type="button"
+              onClick={onEndRound}
+              className="h-7 px-2.5 rounded-md border border-neutral-300 bg-white text-sm font-medium leading-none text-neutral-600 active:bg-neutral-50 transition-colors whitespace-nowrap"
+            >
+              End round
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onQuit}
+            className="min-w-[3.25rem] h-7 px-2.5 rounded-md border border-neutral-300 bg-white text-sm font-medium leading-none text-neutral-700 active:bg-neutral-50 transition-colors"
+          >
+            {quitLabel}
+          </button>
+        </div>
       </div>
       {leaderNote ? (
         <div className="px-4 pb-1.5 text-center text-xs text-neutral-500">

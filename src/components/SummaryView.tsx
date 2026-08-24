@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { SolvedRecord, SkippedRecord } from "@/lib/types";
-import LeaderboardTable, { LeaderboardEntry } from "@/components/LeaderboardTable";
+import PuzzleReviewList from "@/components/PuzzleReviewList";
+import LeaderboardTable, { type LeaderboardEntry } from "@/components/LeaderboardTable";
 import ConfirmSheet from "@/components/ConfirmSheet";
 import { buildApiUrl } from "@/lib/api";
 import type { DataTarget } from "@/lib/dataSource";
@@ -24,21 +25,6 @@ type NameConflict =
   | { kind: "replaceable"; existingScore: number; score: number; lowerCount: number }
   | { kind: "add"; existingScore: number; score: number };
 
-function stripOuterParens(s: string): string {
-  if (s.startsWith("(") && s.endsWith(")")) return s.slice(1, -1);
-  return s;
-}
-
-function formatCard(n: number, useFaceCards: boolean): string {
-  if (!useFaceCards) return n.toString();
-  if (n === 1) return "A";
-  if (n === 11) return "J";
-  if (n === 12) return "Q";
-  if (n === 13) return "K";
-  return n.toString();
-}
-
-
 export default function SummaryView({
   mode,
   solved,
@@ -51,8 +37,6 @@ export default function SummaryView({
   totalTimeMs,
   onHome,
 }: SummaryViewProps) {
-  const [expanded, setExpanded] = useState<number | null>(null);
-  const [expandedSkipped, setExpandedSkipped] = useState<number | null>(null);
   const [leaderName, setLeaderName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -258,130 +242,34 @@ export default function SummaryView({
           <div className="text-neutral-400 text-sm italic mb-8">No puzzles solved or skipped.</div>
         ) : (
           <div className="w-full space-y-6 mb-4">
-            {/* Solved */}
             {solved.length > 0 && (
-              <>
-                <div className="text-xs uppercase tracking-widest text-neutral-400">
-                  Solved ({solved.length})
-                </div>
-                <div className="space-y-3">
-                  {solved.filter((r) => r.puzzle != null).map((record, i) => (
-                    <div key={i} className="border border-neutral-200 rounded-xl overflow-hidden">
-                      <button
-                        className="w-full flex items-center justify-between px-4 min-h-[3rem] active:bg-neutral-50 transition-colors text-left"
-                        onClick={() => setExpanded(expanded === i ? null : i)}
-                      >
-                        <div className="flex items-baseline gap-2 flex-wrap">
-                          <span className="font-semibold">#{record.sessionIndex ?? i + 1}</span>
-                          <span className="text-neutral-500 text-sm">
-                            Target: {record.puzzle.goal}
-                          </span>
-                          <span className="text-neutral-400 text-xs">
-                            [
-                            {record.puzzle.cards
-                              .map((c) => formatCard(c, useFaceCards))
-                              .join(", ")}
-                            ]
-                          </span>
-                        </div>
-                        <span className="text-xs text-neutral-400 ml-2 shrink-0">
-                          {expanded === i ? "▲" : "▼"}
-                        </span>
-                      </button>
-                      {expanded === i && (
-                        <div className="px-4 pb-3 border-t border-neutral-100 space-y-3">
-                          <div>
-                            <div className="text-xs uppercase tracking-widest text-neutral-400 mt-3 mb-1">
-                              Your solution
-                            </div>
-                            <div className="text-sm font-mono bg-neutral-50 rounded-lg px-2 py-1.5 break-all">
-                              {stripOuterParens(record.userFinalExpr)}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-xs uppercase tracking-widest text-neutral-400 mb-1">
-                              {record.solutions && record.solutions.length > 0
-                                ? `All solutions (${record.solutions.length})`
-                                : "All solutions"}
-                            </div>
-                            <div className="max-h-64 overflow-y-auto space-y-1">
-                              {record.solutions && record.solutions.length > 0 ? (
-                                record.solutions.map((sol, j) => (
-                                  <div key={j} className="text-[11px] font-mono bg-neutral-50 rounded-lg px-2 py-1 break-all">
-                                    {sol}
-                                  </div>
-                                ))
-                              ) : (
-                                <div className="text-sm text-neutral-400 italic">
-                                  Generating all solutions…
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </>
+              <PuzzleReviewList
+                title={`Solved`}
+                items={solved
+                  .filter((r) => r.puzzle != null)
+                  .map((r) => ({
+                    sessionIndex: r.sessionIndex,
+                    puzzle: r.puzzle,
+                    userFinalExpr: r.userFinalExpr,
+                    solutions: r.solutions ?? [],
+                  }))}
+                useFaceCards={useFaceCards}
+              />
             )}
-
-            {/* Skipped */}
             {skipped.length > 0 && (
-              <>
-                <div className="text-xs uppercase tracking-widest text-neutral-400">
-                  Skipped ({skipped.length})
-                </div>
-                <div className="space-y-3">
-                  {skipped.filter((r) => r.puzzle != null).map((record, i) => (
-                    <div key={i} className="border border-neutral-200 rounded-xl overflow-hidden">
-                      <button
-                        className="w-full flex items-center justify-between px-4 min-h-[3rem] active:bg-neutral-50 transition-colors text-left"
-                        onClick={() => setExpandedSkipped(expandedSkipped === i ? null : i)}
-                      >
-                        <div className="flex items-baseline gap-2 flex-wrap">
-                          <span className="font-semibold">#{record.sessionIndex ?? i + 1}</span>
-                          <span className="text-neutral-500 text-sm">
-                            Target: {record.puzzle.goal}
-                          </span>
-                          <span className="text-neutral-400 text-xs">
-                            [
-                            {record.puzzle.cards
-                              .map((c) => formatCard(c, useFaceCards))
-                              .join(", ")}
-                            ]
-                          </span>
-                        </div>
-                        <span className="text-xs text-neutral-400 ml-2 shrink-0">
-                          {expandedSkipped === i ? "▲" : "▼"}
-                        </span>
-                      </button>
-                      {expandedSkipped === i && (
-                        <div className="px-4 pb-3 border-t border-neutral-100">
-                          <div className="text-xs uppercase tracking-widest text-neutral-400 mt-3 mb-1">
-                            {record.solutions && record.solutions.length > 0
-                              ? `All solutions (${record.solutions.length})`
-                              : "All solutions"}
-                          </div>
-                          <div className="max-h-64 overflow-y-auto space-y-1">
-                            {record.solutions && record.solutions.length > 0 ? (
-                              record.solutions.map((sol, j) => (
-                                <div key={j} className="text-[11px] font-mono bg-neutral-50 rounded-lg px-2 py-1 break-all">
-                                  {sol}
-                                </div>
-                              ))
-                            ) : (
-                              <div className="text-sm text-neutral-400 italic">
-                                Generating all solutions…
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </>
+              <PuzzleReviewList
+                title={`Skipped`}
+                items={skipped
+                  .filter((r) => r.puzzle != null)
+                  .map((r) => ({
+                    sessionIndex: r.sessionIndex,
+                    puzzle: r.puzzle,
+                    userFinalExpr: null,
+                    solutions: r.solutions ?? [],
+                  }))}
+                useFaceCards={useFaceCards}
+                hideUnsolvedNote
+              />
             )}
           </div>
         )}

@@ -1,8 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import LeaderboardTable, { type LeaderboardEntry } from "@/components/LeaderboardTable";
+import PuzzleReviewList, { type PuzzleReviewItem } from "@/components/PuzzleReviewList";
 import type { RoomStateView } from "@/lib/types";
+import { solve } from "@/lib/solver";
 import RoundLengthField from "@/components/RoundLengthField";
 
 type RoomResultsProps = {
@@ -27,8 +29,10 @@ export default function RoomResults({
   actionError,
 }: RoomResultsProps) {
   const [pickingHost, setPickingHost] = useState(false);
+  const [solutionsByIdx, setSolutionsByIdx] = useState<Record<number, string[]>>({});
   const isHost = room.you.isHost;
   const others = room.players.filter((p) => p.id && p.id !== room.you.playerId);
+  const puzzleKey = room.puzzles.map((p) => `${p.idx}:${p.goal}:${p.cards.join(",")}`).join("|");
 
   const handleLeave = useCallback(() => {
     if (pickingHost) return;
@@ -52,6 +56,87 @@ export default function RoomResults({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [pickingHost]);
+
+  useEffect(() => {
+    setSolutionsByIdx({});
+    const puzzles = room.puzzles;
+    if (puzzles.length === 0) return;
+
+    let cancelled = false;
+    const remaining = puzzles.map((p) => p.idx);
+    const byIdx = new Map(puzzles.map((p) => [p.idx, p]));
+
+    const applySolutions = (idx: number, solutions: string[]) => {
+      if (cancelled) return;
+      setSolutionsByIdx((prev) => ({ ...prev, [idx]: solutions }));
+    };
+
+    let worker: Worker | null = null;
+    try {
+      worker = new Worker(new URL("../workers/puzzle.worker.ts", import.meta.url));
+    } catch {
+      worker = null;
+    }
+
+    const runNext = () => {
+      const idx = remaining.shift();
+      if (idx == null) return;
+      const puzzle = byIdx.get(idx);
+      if (!puzzle) {
+        runNext();
+        return;
+      }
+      if (worker) {
+        worker.postMessage({
+          type: "solveAll",
+          id: idx,
+          cards: puzzle.cards,
+          goal: puzzle.goal,
+        });
+        return;
+      }
+      setTimeout(() => {
+        applySolutions(idx, solve(puzzle.cards, puzzle.goal));
+        runNext();
+      }, 0);
+    };
+
+    if (worker) {
+      worker.onmessage = (
+        e: MessageEvent<{ kind: string; id: number; solutions: string[] }>
+      ) => {
+        const msg = e.data;
+        if (msg.kind !== "solutions") {
+          runNext();
+          return;
+        }
+        applySolutions(msg.id, msg.solutions);
+        runNext();
+      };
+      worker.onerror = () => {
+        worker?.terminate();
+        worker = null;
+        runNext();
+      };
+    }
+    runNext();
+
+    return () => {
+      cancelled = true;
+      worker?.terminate();
+    };
+  }, [puzzleKey, room.puzzles]);
+
+  const reviewItems: PuzzleReviewItem[] = useMemo(
+    () =>
+      room.puzzles.map((p) => ({
+        sessionIndex: p.idx,
+        puzzle: { goal: p.goal, cards: p.cards, n: p.cards.length },
+        userFinalExpr: p.yourExpr ?? null,
+        solutions: solutionsByIdx[p.idx] ?? [],
+      })),
+    [room.puzzles, solutionsByIdx]
+  );
 
   const entries: LeaderboardEntry[] = room.players
     .filter((p) => p.participated)
@@ -88,6 +173,12 @@ export default function RoomResults({
           rankPhrase="placed"
           footnote="Tied scores are ordered by who reached that score first."
         />
+
+        {reviewItems.length > 0 && (
+          <div className="w-full mt-5">
+            <PuzzleReviewList title="Puzzles" items={reviewItems} />
+          </div>
+        )}
 
         <div className="w-full rounded-xl border border-neutral-200 mt-5 mb-4 overflow-hidden">
           <div className="px-3 py-2 text-xs uppercase tracking-widest text-neutral-400 bg-neutral-50">

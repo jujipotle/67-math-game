@@ -83,6 +83,8 @@ export type RoomPuzzleView = {
   idx: number;
   goal: number;
   cards: number[];
+  /** Present on results snapshots: this player's expression if they solved it. */
+  yourExpr?: string | null;
 };
 
 export type RoomLeaderView = {

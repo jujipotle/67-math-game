@@ -7,6 +7,8 @@ import { cardShortcutLabels } from "@/lib/keyboardShortcuts";
 type CardGridProps = {
   tiles: Tile[];
   selectedIndex: number | null;
+  /** True once an operator is chosen — remaining cards are merge targets. */
+  hasOp?: boolean;
   onTileClick: (index: number) => void;
   useFaceCards: boolean;
   showShortcuts: boolean;
@@ -17,6 +19,7 @@ type CardGridProps = {
 export default function CardGrid({
   tiles,
   selectedIndex,
+  hasOp = false,
   onTileClick,
   useFaceCards,
   showShortcuts,
@@ -51,6 +54,23 @@ export default function CardGrid({
         }
 
         const isWrong = highlightWrong && tile.alive;
+        const isMergeTarget = tile.alive && hasOp && !isSelected;
+
+        let style = "bg-neutral-50 border border-dashed border-neutral-200 cursor-default";
+        if (tile.alive) {
+          if (isWrong) {
+            style = "bg-red-50 text-red-700 border-2 border-red-500";
+          } else if (isSelected && hasOp) {
+            style = "bg-neutral-900 text-white ring-2 ring-neutral-900 ring-offset-2";
+          } else if (isSelected) {
+            style =
+              "bg-neutral-100 text-neutral-900 border-2 border-neutral-900 ring-2 ring-neutral-900/15 ring-offset-1";
+          } else if (isMergeTarget) {
+            style = "bg-neutral-100 text-neutral-900 ring-2 ring-neutral-300 active:bg-neutral-300";
+          } else {
+            style = "bg-neutral-100 text-neutral-900 active:bg-neutral-300";
+          }
+        }
 
         return (
           <button
@@ -61,15 +81,7 @@ export default function CardGrid({
               relative flex items-center justify-center
               aspect-[4/3] rounded-xl text-2xl sm:text-3xl font-semibold tabular-nums
               transition-all duration-100 select-none
-              ${
-                tile.alive
-                  ? isWrong
-                    ? "bg-red-50 text-red-700 border-2 border-red-500"
-                    : isSelected
-                      ? "bg-neutral-900 text-white ring-2 ring-neutral-900 ring-offset-2"
-                      : "bg-neutral-100 text-neutral-900 active:bg-neutral-300"
-                  : "bg-neutral-50 border border-dashed border-neutral-200 cursor-default"
-              }
+              ${style}
             `}
           >
             <div className="flex flex-col items-center justify-center leading-tight">

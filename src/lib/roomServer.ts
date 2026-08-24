@@ -18,12 +18,14 @@ import {
   listRoomNames,
   listRoomPlayers,
   listRoomPuzzles,
+  listRoomSolvesForPlayer,
   listRooms,
   newId,
   resetRoomPlayersForRound,
   updateRoom,
   updateRoomPlayer,
   upsertRoomPuzzle,
+  upsertRoomSolve,
   type RoomPlayerRow,
   type RoomRow,
 } from "./roomDb";
@@ -515,6 +517,13 @@ export async function submitSolve(input: {
     return err("invalid solution", 400);
   }
 
+  await upsertRoomSolve({
+    roomId: room.id,
+    round: room.round,
+    playerId: input.playerId,
+    idx: input.idx,
+    finalExpr: expr,
+  });
   await updateRoomPlayer(input.playerId, {
     lastSeenAt: now,
     score: player.score + 1,
@@ -597,6 +606,18 @@ export async function getRoomSnapshot(
       you.puzzleIdx + PREFETCH_COUNT
     );
     puzzles = toPuzzles(rows);
+  } else if (room.status === "results") {
+    const throughIdx = Math.max(
+      1,
+      ...players.map((p) => (p.participated ? p.puzzleIdx : 0))
+    );
+    const rows = await listRoomPuzzles(room.id, room.round, 1, throughIdx);
+    const solves = await listRoomSolvesForPlayer(room.id, room.round, playerId);
+    const exprByIdx = new Map(solves.map((s) => [s.idx, s.finalExpr]));
+    puzzles = toPuzzles(rows).map((p) => ({
+      ...p,
+      yourExpr: exprByIdx.get(p.idx) ?? null,
+    }));
   }
 
   const hideIds = room.hostId !== playerId;
