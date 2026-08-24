@@ -164,6 +164,20 @@ export default function Home() {
   const [stepStack, setStepStack] = useState<Step[]>([]);
   const [selectedTile, setSelectedTile] = useState<number | null>(null);
   const [selectedOp, setSelectedOp] = useState<Op | null>(null);
+  const boardRef = useRef<BoardState | null>(null);
+  const puzzleRef = useRef<Puzzle | null>(null);
+  const selectedTileRef = useRef<number | null>(null);
+  const selectedOpRef = useRef<Op | null>(null);
+  const stepStackRef = useRef<Step[]>([]);
+  const historyStackRef = useRef<BoardState[]>([]);
+  const playElapsedMsRef = useRef(0);
+  const sprintRemainingMsRef = useRef(SPRINT_DURATION_MS);
+  const modeRef = useRef<Mode>("practice");
+  const solutionsReadyRef = useRef(false);
+  const currentSolutionsRef = useRef<string[]>([]);
+  const sprintSessionIdRef = useRef<string | null>(null);
+  const sprintPuzzleIdxRef = useRef<number | null>(null);
+  const targetRef = useRef(target);
   const [useFaceCards, setUseFaceCards] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [numpadCardLayout, setNumpadCardLayout] = useState(false);
@@ -209,6 +223,22 @@ export default function Home() {
   const mpPollFailsRef = useRef(0);
   const didRestoreSeatRef = useRef(false);
   const mpSyncRef = useRef("");
+
+  // Keep play-input refs in sync so rapid taps/keys never see stale selection.
+  boardRef.current = board;
+  puzzleRef.current = puzzle;
+  selectedTileRef.current = selectedTile;
+  selectedOpRef.current = selectedOp;
+  stepStackRef.current = stepStack;
+  historyStackRef.current = historyStack;
+  playElapsedMsRef.current = playElapsedMs;
+  sprintRemainingMsRef.current = sprintRemainingMs;
+  modeRef.current = mode;
+  solutionsReadyRef.current = solutionsReady;
+  currentSolutionsRef.current = currentSolutions;
+  sprintSessionIdRef.current = sprintSessionId;
+  sprintPuzzleIdxRef.current = sprintPuzzleIdx;
+  targetRef.current = target;
 
   const QUEUE_TARGET = 4;
 
@@ -1193,22 +1223,30 @@ export default function Home() {
     }
   }, [screen, solved, skipped, puzzle, solutionsReady]);
 
-  const handleTileClick = (i: number) => {
-    if (!board || !board.tiles[i].alive) return;
+  const handleTileClick = useCallback((i: number) => {
+    const board = boardRef.current;
+    if (!board || !board.tiles[i]?.alive) return;
+
+    let selectedTile = selectedTileRef.current;
+    let selectedOp = selectedOpRef.current;
 
     // Allow clicking an already-selected tile to deselect it
     if (selectedTile === i) {
+      selectedTileRef.current = null;
+      selectedOpRef.current = null;
       setSelectedTile(null);
       setSelectedOp(null);
       return;
     }
 
     if (selectedTile === null) {
+      selectedTileRef.current = i;
       setSelectedTile(i);
       return;
     }
 
     if (selectedOp === null) {
+      selectedTileRef.current = i;
       setSelectedTile(i);
       return;
     }
@@ -1219,6 +1257,8 @@ export default function Home() {
 
     const result = applyOp(a.value, selectedOp, b.value);
     if (result === null) {
+      selectedTileRef.current = null;
+      selectedOpRef.current = null;
       setSelectedTile(null);
       setSelectedOp(null);
       return;
@@ -1242,46 +1282,57 @@ export default function Home() {
       expr: resultExpr,
     };
 
-    setHistoryStack((prev) => [...prev, prevBoard]);
-    setStepStack((prev) => [...prev, step]);
+    const nextHistory = [...historyStackRef.current, prevBoard];
+    const nextSteps = [...stepStackRef.current, step];
+    historyStackRef.current = nextHistory;
+    stepStackRef.current = nextSteps;
+    boardRef.current = newBoard;
+    selectedTileRef.current = i;
+    selectedOpRef.current = null;
+
+    setHistoryStack(nextHistory);
+    setStepStack(nextSteps);
     setBoard(newBoard);
     setSelectedTile(i);
     setSelectedOp(null);
 
     const alive = newBoard.tiles.filter((t) => t.alive);
     if (alive.length === 1) {
-      const goalRat = rat(puzzle!.goal);
+      const puzzle = puzzleRef.current;
+      if (!puzzle) return;
+      const goalRat = rat(puzzle.goal);
       if (eq(alive[0].value, goalRat)) {
-        if (mode === "multiplayer") {
+        if (modeRef.current === "multiplayer") {
           void mpSubmitSolve(resultExpr);
           return;
         }
         setTimerRunning(false);
         const elapsed =
-          mode === "practice"
-            ? playElapsedMs
-            : SPRINT_DURATION_MS - sprintRemainingMs;
-        const stepsWithLast = [...stepStack, step];
+          modeRef.current === "practice"
+            ? playElapsedMsRef.current
+            : SPRINT_DURATION_MS - sprintRemainingMsRef.current;
         const idx = sessionIndexRef.current++;
         const record: SolvedRecord = {
-          puzzle: puzzle!,
-          userSteps: stepsWithLast,
+          puzzle,
+          userSteps: nextSteps,
           userFinalExpr: resultExpr,
-          solutions: solutionsReady ? currentSolutions : [],
+          solutions: solutionsReadyRef.current ? currentSolutionsRef.current : [],
           solvedAtMs: elapsed,
           sessionIndex: idx,
-          solutionsPending: !solutionsReady,
+          solutionsPending: !solutionsReadyRef.current,
         };
         setSolved((prev) => [...prev, record]);
         setSolvedCount((prev) => prev + 1);
         setScreen("review");
-        if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
-          fetch(buildApiUrl("/api/sprint/mark", target), {
+        const sessionId = sprintSessionIdRef.current;
+        const puzzleIdx = sprintPuzzleIdxRef.current;
+        if (modeRef.current === "sprint" && sessionId && puzzleIdx) {
+          fetch(buildApiUrl("/api/sprint/mark", targetRef.current), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              sessionId: sprintSessionId,
-              idx: sprintPuzzleIdx,
+              sessionId,
+              idx: puzzleIdx,
               outcome: "solved",
               finalExpr: resultExpr,
             }),
@@ -1289,27 +1340,32 @@ export default function Home() {
         }
       }
     }
-  };
+  }, [mpSubmitSolve]);
 
-  const handleOpClick = (op: Op) => {
-    if (selectedTile === null) return;
+  const handleOpClick = useCallback((op: Op) => {
+    if (selectedTileRef.current === null) return;
     // Toggle: if clicking the same operator, deselect it
-    if (selectedOp === op) {
-      setSelectedOp(null);
-    } else {
-      setSelectedOp(op);
-    }
-  };
+    const next = selectedOpRef.current === op ? null : op;
+    selectedOpRef.current = next;
+    setSelectedOp(next);
+  }, []);
 
-  const handleUndo = () => {
-    if (historyStack.length === 0) return;
-    const prev = historyStack[historyStack.length - 1];
+  const handleUndo = useCallback(() => {
+    if (historyStackRef.current.length === 0) return;
+    const prev = historyStackRef.current[historyStackRef.current.length - 1];
+    const nextHistory = historyStackRef.current.slice(0, -1);
+    const nextSteps = stepStackRef.current.slice(0, -1);
+    historyStackRef.current = nextHistory;
+    stepStackRef.current = nextSteps;
+    boardRef.current = prev;
+    selectedTileRef.current = null;
+    selectedOpRef.current = null;
     setBoard(prev);
-    setHistoryStack((h) => h.slice(0, -1));
-    setStepStack((s) => s.slice(0, -1));
+    setHistoryStack(nextHistory);
+    setStepStack(nextSteps);
     setSelectedTile(null);
     setSelectedOp(null);
-  };
+  }, []);
 
   const handleContinue = () => {
     if (mode === "sprint" && sprintRemainingMs <= 0) {
@@ -1513,9 +1569,10 @@ export default function Home() {
 
       const tileIndex = cardIndexFromCode(code, numpadCardLayout);
       if (tileIndex != null) {
-        if (!board) return;
-        if (tileIndex < 0 || tileIndex >= board.tiles.length) return;
-        if (!board.tiles[tileIndex].alive) return;
+        const b = boardRef.current;
+        if (!b) return;
+        if (tileIndex < 0 || tileIndex >= b.tiles.length) return;
+        if (!b.tiles[tileIndex].alive) return;
         e.preventDefault();
         handleTileClick(tileIndex);
         return;
@@ -1532,7 +1589,7 @@ export default function Home() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [screen, board, mode, numpadCardLayout, handleTileClick, handleOpClick, handleUndo, handleSkip, handleContinue, mpHostLeaveOpen, mpEndConfirmOpen]);
+  }, [screen, mode, numpadCardLayout, handleTileClick, handleOpClick, handleUndo, handleSkip, handleContinue, mpHostLeaveOpen, mpEndConfirmOpen]);
 
   const timerDisplay =
     mode === "practice" && !waitingPractice

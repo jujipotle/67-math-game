@@ -75,18 +75,33 @@ export default function CardGrid({
         return (
           <button
             key={tile.id}
+            type="button"
             disabled={!tile.alive}
-            onClick={() => onTileClick(i)}
+            onPointerDown={(e) => {
+              if (!tile.alive || e.button !== 0) return;
+              e.preventDefault();
+              (e.currentTarget as HTMLButtonElement).dataset.handled = "1";
+              onTileClick(i);
+            }}
+            onClick={(e) => {
+              if (!tile.alive) return;
+              const el = e.currentTarget as HTMLButtonElement;
+              if (el.dataset.handled === "1") {
+                delete el.dataset.handled;
+                return;
+              }
+              onTileClick(i);
+            }}
             className={`
               relative flex items-center justify-center
               aspect-[4/3] rounded-xl text-2xl sm:text-3xl font-semibold tabular-nums
-              transition-all duration-100 select-none
+              transition-colors duration-75 select-none touch-manipulation
               ${style}
             `}
           >
-            <div className="flex flex-col items-center justify-center leading-tight">
+            <div className="flex flex-col items-center justify-center leading-tight pointer-events-none">
               {showShortcuts && tile.alive && display && (
-                <span className="text-[11px] text-neutral-400 select-none pointer-events-none">
+                <span className="text-[11px] text-neutral-400 select-none">
                   {hotkeyLabel}
                 </span>
               )}
