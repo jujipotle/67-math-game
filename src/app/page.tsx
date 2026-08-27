@@ -1825,6 +1825,14 @@ export default function Home() {
             </span>
           </div>
         )}
+        <a
+          href="https://justinji.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-8 text-sm text-neutral-400 hover:text-neutral-600 transition-colors"
+        >
+          Built by Justin Ji
+        </a>
       </div>
       {homePopup && (
         <div
