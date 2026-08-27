@@ -1740,7 +1740,10 @@ export default function Home() {
     return (
       <>
       <div className="fixed inset-0 flex flex-col items-center justify-center px-6 overflow-y-auto"
-        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+        style={{
+          paddingTop: "max(1.5rem, env(safe-area-inset-top, 1.5rem))",
+          paddingBottom: "max(4.5rem, calc(env(safe-area-inset-bottom, 0px) + 4.5rem))",
+        }}>
         <h1 className="text-6xl sm:text-7xl md:text-8xl font-bold mb-6">67</h1>
         <p className="text-neutral-600 text-lg text-center max-w-sm mb-6 leading-relaxed">
           Combine all cards with + − × ÷ to reach the target.
@@ -1829,7 +1832,10 @@ export default function Home() {
           href="https://justinji.com"
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-8 text-sm text-neutral-400 hover:text-neutral-600 transition-colors"
+          className="absolute left-0 right-0 text-center text-sm text-neutral-500 underline underline-offset-2 hover:text-neutral-800 transition-colors"
+          style={{
+            bottom: "max(1.25rem, calc(env(safe-area-inset-bottom, 0px) + 1.25rem))",
+          }}
         >
           Built by Justin Ji
         </a>
