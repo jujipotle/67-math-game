@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSprintMaxIdx, getSprintSession } from "@/lib/db";
+import { getSprintMaxIdx, getSprintPuzzle, getSprintSession } from "@/lib/db";
 import { issueSprintPuzzle } from "@/lib/sprintServer";
 
 export const runtime = "nodejs";
@@ -29,14 +29,30 @@ export async function POST(req: Request) {
   }
 
   const remainingMs = session.endsAt - session.startedAt;
-  if (remainingMs <= 0) {
+  // Allow a 30s grace buffer for network latency variance so a client that still has
+  // time on its local timer is never abruptly rejected with 410.
+  if (remainingMs < -30_000) {
     return NextResponse.json(
       { error: "session ended", endsAt: session.endsAt },
       { status: 410 }
     );
   }
 
-  const idx = (await getSprintMaxIdx(sessionId)) + 1;
+  const maxIdx = await getSprintMaxIdx(sessionId);
+  if (maxIdx >= 1) {
+    const latest = await getSprintPuzzle(sessionId, maxIdx);
+    if (latest && latest.status === "issued") {
+      const cards = JSON.parse(latest.cardsJson) as number[];
+      return NextResponse.json({
+        idx: maxIdx,
+        goal: latest.goal,
+        cards,
+        endsAt: session.endsAt,
+      });
+    }
+  }
+
+  const idx = maxIdx + 1;
   const puzzle = await issueSprintPuzzle(sessionId, idx, session.band);
 
   return NextResponse.json({

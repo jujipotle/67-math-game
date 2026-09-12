@@ -189,6 +189,10 @@ export default function Home() {
   const [currentSolutions, setCurrentSolutions] = useState<string[]>([]);
   const [solutionsReady, setSolutionsReady] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [sprintLoadError, setSprintLoadError] = useState(false);
+  const puzzleStartTimeRef = useRef<number>(0);
+  const sprintPrefetchedRef = useRef<{ idx: number; goal: number; cards: number[]; endsAt?: number } | null>(null);
+  const sprintPrefetchPromiseRef = useRef<Promise<{ idx: number; goal: number; cards: number[] } | null> | null>(null);
   const lastTickRef = useRef<number>(0);
   const solveAbortRef = useRef(0);
   const puzzleQueueRef = useRef<Puzzle[]>([]);
@@ -516,6 +520,9 @@ export default function Home() {
       setSprintRemainingMs(SPRINT_DURATION_MS);
       setSprintSessionId(null);
       setSprintPuzzleIdx(null);
+      sprintPrefetchedRef.current = null;
+      sprintPrefetchPromiseRef.current = null;
+      setSprintLoadError(false);
 
       if (m === "sprint") {
         setGenerating(true);
@@ -551,7 +558,7 @@ export default function Home() {
 
             setSprintSessionId(data.sessionId);
             setSprintPuzzleIdx(data.idx ?? 1);
-            setSprintRemainingMs(Math.max(0, data.endsAt - Date.now()));
+            setSprintRemainingMs(SPRINT_DURATION_MS);
             const b = makeBoardFromPuzzle(puzzleForPlay);
             setPuzzle(puzzleForPlay);
             setBoard(b);
@@ -563,6 +570,7 @@ export default function Home() {
             setSelectedOp(null);
             setGenerating(false);
             setTimerRunning(true);
+            puzzleStartTimeRef.current = performance.now();
             skipDebounceRef.current = 0;
 
             const id = ++solveAbortRef.current;
@@ -1145,9 +1153,62 @@ export default function Home() {
     finishSoloSession();
   }, [mpHostLeaveOpen, mpLeave, hostNeedsSuccessor, finishSoloSession]);
 
+  const markAndPrefetchSprint = useCallback(
+    (
+      sessionId: string,
+      idx: number,
+      outcome: "solved" | "skipped",
+      finalExpr: string | null,
+      timeOnPuzzleMs: number
+    ) => {
+      sprintPrefetchedRef.current = null;
+      setSprintLoadError(false);
+
+      const doFetch = async () => {
+        try {
+          const res = await fetch(buildApiUrl("/api/sprint/mark", targetRef.current), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sessionId,
+              idx,
+              outcome,
+              finalExpr,
+              timeOnPuzzleMs,
+            }),
+          });
+          if (!res.ok) return null;
+          const data = (await res.json()) as {
+            ok?: boolean;
+            nextPuzzle?: {
+              idx: number;
+              goal: number;
+              cards: number[];
+              endsAt?: number;
+            } | null;
+          };
+          if (data.ok && data.nextPuzzle) {
+            sprintPrefetchedRef.current = data.nextPuzzle;
+            return data.nextPuzzle;
+          }
+          return null;
+        } catch {
+          return null;
+        }
+      };
+
+      sprintPrefetchPromiseRef.current = doFetch();
+    },
+    []
+  );
+
   const handleTimeUp = useCallback(() => {
     setTimerRunning(false);
     if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
+      const elapsedOnPuzzle =
+        puzzleStartTimeRef.current > 0
+          ? Math.max(0, performance.now() - puzzleStartTimeRef.current)
+          : 0;
       fetch(buildApiUrl("/api/sprint/mark", target), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1155,6 +1216,7 @@ export default function Home() {
           sessionId: sprintSessionId,
           idx: sprintPuzzleIdx,
           outcome: "skipped",
+          timeOnPuzzleMs: Math.round(elapsedOnPuzzle),
         }),
       }).catch(() => {});
     }
@@ -1327,20 +1389,21 @@ export default function Home() {
         const sessionId = sprintSessionIdRef.current;
         const puzzleIdx = sprintPuzzleIdxRef.current;
         if (modeRef.current === "sprint" && sessionId && puzzleIdx) {
-          fetch(buildApiUrl("/api/sprint/mark", targetRef.current), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              sessionId,
-              idx: puzzleIdx,
-              outcome: "solved",
-              finalExpr: resultExpr,
-            }),
-          }).catch(() => {});
+          const elapsedOnPuzzle =
+            puzzleStartTimeRef.current > 0
+              ? Math.max(0, performance.now() - puzzleStartTimeRef.current)
+              : 0;
+          markAndPrefetchSprint(
+            sessionId,
+            puzzleIdx,
+            "solved",
+            resultExpr,
+            Math.round(elapsedOnPuzzle)
+          );
         }
       }
     }
-  }, [mpSubmitSolve]);
+  }, [mpSubmitSolve, markAndPrefetchSprint]);
 
   const handleOpClick = useCallback((op: Op) => {
     if (selectedTileRef.current === null) return;
@@ -1367,95 +1430,147 @@ export default function Home() {
     setSelectedOp(null);
   }, []);
 
-  const handleContinue = () => {
+  const handleContinue = useCallback(() => {
     if (mode === "sprint" && sprintRemainingMs <= 0) {
       finishSoloSession();
       return;
     }
 
     if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx != null) {
-      // Ask the server for the next puzzle. The server picks the band (advancing
-      // it only on solves) and generates the goal/cards; the client cannot
-      // influence them. Show the loading state while we wait.
       setScreen("play");
-      setPuzzle(null);
-      setBoard(null);
       setCurrentSolutions([]);
       setSolutionsReady(false);
       setHistoryStack([]);
       setStepStack([]);
       setSelectedTile(null);
       setSelectedOp(null);
+      skipDebounceRef.current = 0;
+      setSprintLoadError(false);
+
+      const applyNextPuzzle = (data: { idx: number; goal: number; cards: number[] }) => {
+        const puzzleForPlay: Puzzle = {
+          goal: data.goal,
+          cards: data.cards,
+          n: data.cards.length,
+        };
+
+        const b = makeBoardFromPuzzle(puzzleForPlay);
+        setSprintPuzzleIdx(data.idx);
+        setPuzzle(puzzleForPlay);
+        setBoard(b);
+        setGenerating(false);
+        setTimerRunning(true);
+        puzzleStartTimeRef.current = performance.now();
+
+        // Kick off full solution enumeration for the new puzzle.
+        const id = ++solveAbortRef.current;
+        if (workerRef.current) {
+          workerBusyRef.current = true;
+          workerRef.current.postMessage({
+            type: "solveAll",
+            id,
+            cards: puzzleForPlay.cards,
+            goal: puzzleForPlay.goal,
+          });
+        } else {
+          setTimeout(() => {
+            if (solveAbortRef.current !== id) return;
+            const solutions = solve(puzzleForPlay.cards, puzzleForPlay.goal);
+            if (solveAbortRef.current !== id) return;
+            setCurrentSolutions(solutions);
+            setSolutionsReady(true);
+          }, 0);
+        }
+      };
+
+      // 1. Instant path: already prefetched during review!
+      if (sprintPrefetchedRef.current) {
+        const prefetched = sprintPrefetchedRef.current;
+        sprintPrefetchedRef.current = null;
+        sprintPrefetchPromiseRef.current = null;
+        applyNextPuzzle(prefetched);
+        return;
+      }
+
+      // 2. Clear old board so loading indicator or error is shown if not immediately ready
+      setPuzzle(null);
+      setBoard(null);
       setGenerating(true);
       setTimerRunning(false);
-      skipDebounceRef.current = 0;
 
       (async () => {
-        try {
-          const res = await fetch(buildApiUrl("/api/sprint/next", target), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId: sprintSessionId }),
-          });
-          const data = (await res.json()) as {
-            idx?: number;
-            goal?: number;
-            cards?: number[];
-            endsAt?: number;
-            error?: string;
-          };
-          if (
-            !res.ok ||
-            data.idx == null ||
-            data.goal == null ||
-            !Array.isArray(data.cards)
-          ) {
-            // Session ended or failed – end the sprint gracefully.
-            finishSoloSession();
+        // Await in-flight prefetch if one is running
+        if (sprintPrefetchPromiseRef.current) {
+          const prefetched = await sprintPrefetchPromiseRef.current;
+          sprintPrefetchPromiseRef.current = null;
+          if (prefetched) {
+            applyNextPuzzle(prefetched);
             return;
           }
-
-          const puzzleForPlay: Puzzle = {
-            goal: data.goal,
-            cards: data.cards,
-            n: data.cards.length,
-          };
-
-          const b = makeBoardFromPuzzle(puzzleForPlay);
-          setSprintPuzzleIdx(data.idx);
-          setPuzzle(puzzleForPlay);
-          setBoard(b);
-          setGenerating(false);
-          setTimerRunning(true);
-
-          // Kick off full solution enumeration for the new puzzle.
-          const id = ++solveAbortRef.current;
-          if (workerRef.current) {
-            workerBusyRef.current = true;
-            workerRef.current.postMessage({
-              type: "solveAll",
-              id,
-              cards: puzzleForPlay.cards,
-              goal: puzzleForPlay.goal,
-            });
-          } else {
-            setTimeout(() => {
-              if (solveAbortRef.current !== id) return;
-              const solutions = solve(puzzleForPlay.cards, puzzleForPlay.goal);
-              if (solveAbortRef.current !== id) return;
-              setCurrentSolutions(solutions);
-              setSolutionsReady(true);
-            }, 0);
-          }
-        } catch {
-          finishSoloSession();
         }
+
+        // Otherwise fetch /api/sprint/next with retries
+        const fetchNextWithRetry = async (
+          retries = 3
+        ): Promise<{ idx: number; goal: number; cards: number[] } | null> => {
+          for (let attempt = 0; attempt < retries; attempt++) {
+            try {
+              const res = await fetch(buildApiUrl("/api/sprint/next", target), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sessionId: sprintSessionId }),
+              });
+              if (res.status === 410) {
+                return null;
+              }
+              if (res.ok) {
+                const data = (await res.json()) as {
+                  idx?: number;
+                  goal?: number;
+                  cards?: number[];
+                };
+                if (data.idx != null && data.goal != null && Array.isArray(data.cards)) {
+                  return { idx: data.idx, goal: data.goal, cards: data.cards };
+                }
+              }
+            } catch {
+              // Retry on network glitch
+            }
+            if (attempt < retries - 1) {
+              await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+            }
+          }
+          return null;
+        };
+
+        const nextData = await fetchNextWithRetry(3);
+        if (!nextData) {
+          if (sprintRemainingMs <= 0) {
+            finishSoloSession();
+          } else {
+            // Failed after retries: show retry button, keep timer paused, DO NOT kill session!
+            setSprintLoadError(true);
+            setGenerating(false);
+          }
+          return;
+        }
+
+        applyNextPuzzle(nextData);
       })();
       return;
     }
+
     setScreen("play");
     startNewPuzzle();
-  };
+  }, [
+    mode,
+    sprintRemainingMs,
+    sprintSessionId,
+    sprintPuzzleIdx,
+    finishSoloSession,
+    startNewPuzzle,
+    target,
+  ]);
 
   const handleSkip = useCallback(() => {
     if (mode === "multiplayer") return;
@@ -1465,20 +1580,17 @@ export default function Home() {
     skipDebounceRef.current = now;
     setSkippedCount((c) => c + 1);
     if (mode === "sprint" && sprintSessionId && sprintPuzzleIdx) {
-      fetch(buildApiUrl("/api/sprint/mark", target), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: sprintSessionId,
-          idx: sprintPuzzleIdx,
-          outcome: "skipped",
-        }),
-      })
-        .then(() => {
-          // Ignore server endsAt for local display; we already applied the 20s penalty
-          // immediately below to keep client and displayed timer in sync.
-        })
-        .catch(() => {});
+      const elapsedOnPuzzle =
+        puzzleStartTimeRef.current > 0
+          ? Math.max(0, performance.now() - puzzleStartTimeRef.current)
+          : 0;
+      markAndPrefetchSprint(
+        sprintSessionId,
+        sprintPuzzleIdx,
+        "skipped",
+        null,
+        Math.round(elapsedOnPuzzle)
+      );
       // Apply the 20s penalty immediately on the client so the timer updates
       // without waiting for the network round-trip.
       setSprintRemainingMs((prev) => Math.max(0, prev - 20000));
@@ -1500,11 +1612,23 @@ export default function Home() {
       ]);
     }
     setScreen("review");
-  }, [puzzle, board, mode, solutionsReady, currentSolutions, sprintSessionId, sprintPuzzleIdx, target]);
+  }, [
+    puzzle,
+    board,
+    mode,
+    solutionsReady,
+    currentSolutions,
+    sprintSessionId,
+    sprintPuzzleIdx,
+    markAndPrefetchSprint,
+  ]);
 
   const handleHome = () => {
     setScreen("home");
     setTimerRunning(false);
+    sprintPrefetchedRef.current = null;
+    sprintPrefetchPromiseRef.current = null;
+    setSprintLoadError(false);
   };
 
   useEffect(() => {
@@ -1527,6 +1651,7 @@ export default function Home() {
       }
 
       const rawKey = e.key;
+      const code = e.code;
 
       if (mpHostLeaveOpen) {
         if (rawKey === "Escape") {
@@ -1552,22 +1677,20 @@ export default function Home() {
 
       if (screen !== "play") return;
 
-      if (isUndoKey(rawKey)) {
+      if (isUndoKey(rawKey, code)) {
         e.preventDefault();
         handleUndo();
         return;
       }
 
-      if (isSkipKey(rawKey)) {
+      if (isSkipKey(rawKey, code)) {
         if (mode === "multiplayer") return;
         e.preventDefault();
         handleSkip();
         return;
       }
 
-      const code = e.code;
-
-      const tileIndex = cardIndexFromCode(code, numpadCardLayout);
+      const tileIndex = cardIndexFromCode(code, numpadCardLayout, rawKey);
       if (tileIndex != null) {
         const b = boardRef.current;
         if (!b) return;
@@ -1578,7 +1701,7 @@ export default function Home() {
         return;
       }
 
-      const op = opFromCode(code);
+      const op = opFromCode(code, rawKey);
       if (op) {
         e.preventDefault();
         handleOpClick(op);
@@ -2035,9 +2158,34 @@ export default function Home() {
         />
         {hostEndRoundUi}
         {sessionLeaveUi}
-        <div className="flex-1 flex items-center justify-center">
-          <span className="text-neutral-400 text-sm">Generating next problem…</span>
-        </div>
+        {sprintLoadError ? (
+          <div className="flex-1 flex flex-col items-center justify-center px-4 text-center">
+            <div className="text-base font-semibold text-neutral-800 mb-1">Connection problem</div>
+            <p className="text-sm text-neutral-500 mb-4 max-w-xs">
+              Unable to load the next problem. Please check your internet connection and try again.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleContinue}
+                className="px-4 py-2 bg-neutral-900 text-white rounded-xl text-sm font-medium active:bg-neutral-700"
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={handleQuit}
+                className="px-4 py-2 border border-neutral-300 text-neutral-700 rounded-xl text-sm font-medium active:bg-neutral-50"
+              >
+                Quit sprint
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex-1 flex items-center justify-center">
+            <span className="text-neutral-400 text-sm">Generating next problem…</span>
+          </div>
+        )}
       </div>
     );
   }

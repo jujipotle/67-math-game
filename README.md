@@ -101,7 +101,7 @@ Sprint mode uses `generateSprintPuzzle(band)` to constrain the target to a speci
 4. Review shows the player's expression and all canonical solutions (computed asynchronously).
 5. Continue loads the next puzzle; skip marks the puzzle skipped and applies the penalty.
 
-Keyboard shortcuts: top-row or numpad `1`–`6` select cards (`1` `2` `3` / `4` `5` `6` by default), `Q` `W` `E` `R` are + − × ÷, Escape undoes, and Space skips (practice/sprint). **Numpad layout for card shortcuts** swaps top and bottom rows to `4` `5` `6` / `1` `2` `3` (same keys work either way). Space continues on the review screen. Leave/Quit is click-only.
+Keyboard shortcuts: `1` `2` `3` (top row) and `Q` `W` `E` (bottom row) select cards by default, `A` `S` `D` `F` are + − × ÷, `Z` undoes, and `X` skips (practice/sprint). Numpad uses `4` `5` `6` (top row) and `1` `2` `3` (bottom row) for cards, `A` `S` `D` `F` for operations, and `Z` / `X` for undo / skip. The **Numpad layout for card shortcuts** setting displays card hints as `4` `5` `6` / `1` `2` `3`. Space continues on the review screen. Leave/Quit is click-only.
 
 ### Sprint session lifecycle
 

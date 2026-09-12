@@ -8,7 +8,7 @@ import {
   updateSprintSolved,
 } from "@/lib/db";
 import { validateFinalExpr } from "@/lib/solver";
-import { nextBand } from "@/lib/sprintServer";
+import { issueSprintPuzzle, nextBand } from "@/lib/sprintServer";
 
 export const runtime = "nodejs";
 
@@ -19,6 +19,7 @@ type MarkBody = {
   idx?: number;
   outcome?: "solved" | "skipped";
   finalExpr?: string;
+  timeOnPuzzleMs?: number;
 };
 
 export async function POST(req: Request) {
@@ -45,8 +46,18 @@ export async function POST(req: Request) {
   const goal = puzzleRow.goal;
   const remainingBeforeMs = session.endsAt - session.startedAt;
   const issuedAt = Number(puzzleRow.issuedAt);
-  const timeOnPuzzleMs = Math.max(0, now - issuedAt);
-  const sessionEnded = remainingBeforeMs <= 0;
+  const serverElapsedMs = Math.max(0, now - issuedAt);
+
+  // Client tracks active play time on the puzzle (excluding network transit).
+  // Cap at serverElapsedMs to prevent cheating by passing negative/deflated values.
+  const rawClientTime = typeof body?.timeOnPuzzleMs === "number" ? body.timeOnPuzzleMs : null;
+  const timeOnPuzzleMs =
+    rawClientTime != null && rawClientTime >= 0
+      ? Math.min(serverElapsedMs, Math.max(0, Math.round(rawClientTime)))
+      : serverElapsedMs;
+
+  // Allow 30s grace for network latency variance so late solves are not abruptly dropped.
+  const sessionEnded = remainingBeforeMs < -30_000;
 
   if (outcome === "solved") {
     if (sessionEnded) {
@@ -60,11 +71,29 @@ export async function POST(req: Request) {
     await updateSprintPuzzleStatus({ sessionId, idx, status: "solved", finalExpr });
     await updateSprintSolved(sessionId, 1);
     // Server-authoritative band rotation: advance on solve, keep on skip.
-    await updateSprintBand(sessionId, nextBand(session.band));
+    const newBand = nextBand(session.band);
+    await updateSprintBand(sessionId, newBand);
     const remainingAfterMs = Math.max(0, remainingBeforeMs - timeOnPuzzleMs);
     const nextEndsAt = session.startedAt + remainingAfterMs;
     await updateSprintEndsAt(sessionId, nextEndsAt);
-    return NextResponse.json({ ok: true, endsAt: nextEndsAt });
+
+    let nextPuzzleData = null;
+    if (remainingAfterMs > 0) {
+      const nextIdx = idx + 1;
+      const nextPuzzle = await issueSprintPuzzle(sessionId, nextIdx, newBand);
+      nextPuzzleData = {
+        idx: nextIdx,
+        goal: nextPuzzle.goal,
+        cards: nextPuzzle.cards,
+        endsAt: nextEndsAt,
+      };
+    }
+
+    return NextResponse.json({
+      ok: true,
+      endsAt: nextEndsAt,
+      nextPuzzle: nextPuzzleData,
+    });
   }
 
   // skipped
@@ -75,6 +104,23 @@ export async function POST(req: Request) {
   const remainingAfterMs = Math.max(0, remainingBeforeMs - timeOnPuzzleMs - SKIP_PENALTY_MS);
   const nextEndsAt = session.startedAt + remainingAfterMs;
   await updateSprintEndsAt(sessionId, nextEndsAt);
-  return NextResponse.json({ ok: true, endsAt: nextEndsAt });
+
+  let nextPuzzleData = null;
+  if (remainingAfterMs > 0) {
+    const nextIdx = idx + 1;
+    const nextPuzzle = await issueSprintPuzzle(sessionId, nextIdx, session.band);
+    nextPuzzleData = {
+      idx: nextIdx,
+      goal: nextPuzzle.goal,
+      cards: nextPuzzle.cards,
+      endsAt: nextEndsAt,
+    };
+  }
+
+  return NextResponse.json({
+    ok: true,
+    endsAt: nextEndsAt,
+    nextPuzzle: nextPuzzleData,
+  });
 }
 
