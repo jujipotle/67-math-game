@@ -4,9 +4,11 @@ type ConfirmSheetProps = {
   title: string;
   body?: string;
   confirmLabel?: string;
+  secondaryLabel?: string;
   cancelLabel?: string;
   showConfirmShortcut?: boolean;
   onConfirm: () => void;
+  onSecondary?: () => void;
   onCancel: () => void;
 };
 
@@ -14,9 +16,11 @@ export default function ConfirmSheet({
   title,
   body,
   confirmLabel = "Quit",
+  secondaryLabel,
   cancelLabel = "Resume",
   showConfirmShortcut = true,
   onConfirm,
+  onSecondary,
   onCancel,
 }: ConfirmSheetProps) {
   return (
@@ -42,6 +46,15 @@ export default function ConfirmSheet({
             ) : null}
           </span>
         </button>
+        {secondaryLabel && onSecondary ? (
+          <button
+            type="button"
+            onClick={onSecondary}
+            className="w-full h-12 mb-2 rounded-xl border-2 border-neutral-300 text-neutral-800 font-medium"
+          >
+            {secondaryLabel}
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={onCancel}

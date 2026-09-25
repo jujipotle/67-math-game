@@ -22,7 +22,13 @@ type SummaryViewProps = {
 };
 
 type NameConflict =
-  | { kind: "replaceable"; existingScore: number; score: number; lowerCount: number }
+  | {
+      kind: "choice";
+      existingScore: number;
+      score: number;
+      lowerCount: number;
+      canAdd: boolean;
+    }
   | { kind: "add"; existingScore: number; score: number };
 
 export default function SummaryView({
@@ -95,20 +101,22 @@ export default function SummaryView({
           ok?: boolean;
           score?: number;
           error?: string;
-          conflict?: "replaceable" | "add";
+          conflict?: "choice" | "add" | "replaceable";
           existingScore?: number;
           lowerCount?: number;
+          canAdd?: boolean;
         };
         if (
           res.status === 409 &&
-          data.conflict === "replaceable" &&
+          (data.conflict === "choice" || data.conflict === "replaceable") &&
           typeof data.existingScore === "number"
         ) {
           setNameConflict({
-            kind: "replaceable",
+            kind: "choice",
             existingScore: data.existingScore,
             score: typeof data.score === "number" ? data.score : userScore,
             lowerCount: typeof data.lowerCount === "number" ? data.lowerCount : 1,
+            canAdd: data.conflict === "replaceable" ? true : data.canAdd !== false,
           });
           return;
         }
@@ -212,17 +220,30 @@ export default function SummaryView({
           </div>
         )}
 
-        {nameConflict?.kind === "replaceable" && (
+        {nameConflict?.kind === "choice" && (
           <ConfirmSheet
-            title="New personal best"
+            title="Name already on the board"
             body={
-              nameConflict.lowerCount > 1
-                ? `“${leaderName.trim()}” already has ${nameConflict.lowerCount} entries (best: ${nameConflict.existingScore}). Replace them all with your new score of ${nameConflict.score}?`
-                : `“${leaderName.trim()}” is already on the board at ${nameConflict.existingScore}. Replace it with your new score of ${nameConflict.score}?`
+              nameConflict.canAdd
+                ? nameConflict.lowerCount > 1
+                  ? `“${leaderName.trim()}” already has ${nameConflict.lowerCount} lower scores (best: ${nameConflict.existingScore}). Replace those lower scores, or keep them and add your new score of ${nameConflict.score}?`
+                  : `“${leaderName.trim()}” already has a lower score of ${nameConflict.existingScore}. Replace it, or keep it and add your new score of ${nameConflict.score}?`
+                : nameConflict.lowerCount > 1
+                  ? `“${leaderName.trim()}” already has ${nameConflict.score} (older entries rank higher when tied). Replace your ${nameConflict.lowerCount} lower scores, or leave the board as-is?`
+                  : `“${leaderName.trim()}” already has ${nameConflict.score} (older entries rank higher when tied). Replace your lower score, or leave the board as-is?`
             }
-            confirmLabel="Replace all"
+            confirmLabel={
+              nameConflict.lowerCount > 1 ? "Replace lower scores" : "Replace lower score"
+            }
+            secondaryLabel={nameConflict.canAdd ? "Keep all & add" : undefined}
+            showConfirmShortcut={false}
             cancelLabel="Cancel"
             onConfirm={() => void submitScore({ replace: true })}
+            onSecondary={
+              nameConflict.canAdd
+                ? () => void submitScore({ confirmAdd: true })
+                : undefined
+            }
             onCancel={() => setNameConflict(null)}
           />
         )}

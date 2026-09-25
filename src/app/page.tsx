@@ -2243,7 +2243,7 @@ export default function Home() {
             />
 
             {/* Actions */}
-            <div className="flex gap-2.5 px-4 pb-2 max-w-sm mx-auto w-full">
+            <div className="flex gap-1.5 px-4 pb-2 max-w-sm mx-auto w-full">
               <button
                 onClick={handleUndo}
                 disabled={historyStack.length === 0}

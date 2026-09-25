@@ -7,7 +7,7 @@ import {
   insertLeaderboardEntry,
   listLeaderboardEntries,
   markSprintSubmitted,
-  replaceLeaderboardScore,
+  replaceLowerLeaderboardScores,
   updateLeaderboardEntry,
   LeaderboardKind,
 } from "@/lib/db";
@@ -56,40 +56,33 @@ export async function POST(req: Request) {
   const score = session.solved;
   const existing = await findLeaderboardEntriesByName(name, kind);
   const best = existing[0] ?? null;
+  const lowerCount = existing.filter((e) => e.score < score).length;
+  const canAdd = !existing.some((e) => e.score === score);
 
-  if (best) {
-    if (score > best.score) {
-      if (!replace) {
-        return NextResponse.json(
-          {
-            error: "name exists",
-            conflict: "replaceable",
-            existingScore: best.score,
-            score,
-            lowerCount: existing.length,
-          },
-          { status: 409 }
-        );
-      }
-      const ok = await replaceLeaderboardScore({
-        keepId: best.id,
-        name,
-        score,
-        createdAt: Date.now(),
-        kind,
-      });
-      if (!ok) {
-        return NextResponse.json(
-          { error: "cannot replace with a lower score" },
-          { status: 409 }
-        );
-      }
+  if (best && !replace && !confirmAdd) {
+    // Already have this exact score (older ranks better) and nothing lower to clear.
+    if (!canAdd && lowerCount === 0) {
       await markSprintSubmitted(sessionId);
-      return NextResponse.json({ ok: true, id: best.id, score, replaced: true });
+      return NextResponse.json({ ok: true, id: best.id, score, alreadyHad: true });
     }
 
-    // Not a new personal best — offer to add without touching existing entries.
-    if (!confirmAdd) {
+    // Have lower scores that could be replaced — ask before changing anything.
+    if (lowerCount > 0) {
+      return NextResponse.json(
+        {
+          error: "name exists",
+          conflict: "choice",
+          existingScore: best.score,
+          score,
+          lowerCount,
+          canAdd,
+        },
+        { status: 409 }
+      );
+    }
+
+    // Only higher scores exist — offer to add this one alongside them.
+    if (canAdd) {
       return NextResponse.json(
         {
           error: "name exists",
@@ -102,10 +95,36 @@ export async function POST(req: Request) {
     }
   }
 
-  const id = await insertLeaderboardEntry(name, score, Date.now(), kind);
-  await markSprintSubmitted(sessionId);
+  if (replace) {
+    if (lowerCount === 0) {
+      return NextResponse.json({ error: "nothing to replace" }, { status: 400 });
+    }
+    const result = await replaceLowerLeaderboardScores({
+      name,
+      score,
+      createdAt: Date.now(),
+      kind,
+    });
+    await markSprintSubmitted(sessionId);
+    return NextResponse.json({
+      ok: true,
+      id: result.id,
+      score,
+      replaced: true,
+      inserted: result.inserted,
+    });
+  }
 
-  return NextResponse.json({ ok: true, id, score });
+  if (confirmAdd || !best) {
+    if (best && !canAdd) {
+      return NextResponse.json({ error: "score already on board" }, { status: 409 });
+    }
+    const id = await insertLeaderboardEntry(name, score, Date.now(), kind);
+    await markSprintSubmitted(sessionId);
+    return NextResponse.json({ ok: true, id, score });
+  }
+
+  return NextResponse.json({ error: "invalid request" }, { status: 400 });
 }
 
 /**

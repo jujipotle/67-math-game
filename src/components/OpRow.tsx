@@ -19,7 +19,7 @@ type OpRowProps = {
 
 export default function OpRow({ selectedOp, disabled, onOpClick, showShortcuts }: OpRowProps) {
   return (
-    <div className="flex gap-2.5 px-4 py-3 max-w-sm mx-auto w-full">
+    <div className="flex gap-1.5 px-4 py-2 max-w-sm mx-auto w-full">
       {OPS.map(({ op, label }) => {
         const hotkey = opShortcutLabel(op);
         return (

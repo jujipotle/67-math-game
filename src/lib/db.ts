@@ -270,8 +270,50 @@ export async function findLeaderboardEntriesByName(
 }
 
 /**
+ * Delete same-name entries with a strictly lower score, then insert the new score
+ * unless an equal score already exists (older equal ranks better on the board).
+ * Keeps all entries with score > new score.
+ */
+export async function replaceLowerLeaderboardScores(params: {
+  name: string;
+  score: number;
+  createdAt: number;
+  kind: LeaderboardKind;
+}): Promise<{ id: number; inserted: boolean }> {
+  const { name, score, createdAt, kind } = params;
+  if (useNeon) {
+    const sql = await getNeon();
+    await sql`
+      DELETE FROM leaderboard_entries
+      WHERE kind = ${kind} AND LOWER(name) = LOWER(${name}) AND score < ${score}
+    `;
+    const equal = await sql`
+      SELECT id FROM leaderboard_entries
+      WHERE kind = ${kind} AND LOWER(name) = LOWER(${name}) AND score = ${score}
+      ORDER BY "createdAt" ASC
+      LIMIT 1
+    `;
+    const existingId = (equal as { id: number }[])[0]?.id;
+    if (existingId != null) {
+      await sql`
+        UPDATE leaderboard_entries SET name = ${name} WHERE id = ${existingId}
+      `;
+      return { id: existingId, inserted: false };
+    }
+    const rows = await sql`
+      INSERT INTO leaderboard_entries (name, score, "createdAt", kind)
+      VALUES (${name}, ${score}, ${createdAt}, ${kind})
+      RETURNING id
+    `;
+    return { id: (rows as { id: number }[])[0].id, inserted: true };
+  }
+  return Promise.resolve(sqliteReplaceLowerLeaderboardScores(params));
+}
+
+/**
  * Set one row to a new personal best and delete every other row with the same name.
  * Refuses if the new score is not strictly higher than the kept row.
+ * @deprecated Prefer replaceLowerLeaderboardScores for name conflicts.
  */
 export async function replaceLeaderboardScore(params: {
   keepId: number;
@@ -633,6 +675,41 @@ function sqliteFindLeaderboardEntriesByName(
        ORDER BY score DESC, createdAt ASC`
     )
     .all(kind, name) as LeaderboardEntry[];
+}
+
+function sqliteReplaceLowerLeaderboardScores(params: {
+  name: string;
+  score: number;
+  createdAt: number;
+  kind: LeaderboardKind;
+}): { id: number; inserted: boolean } {
+  const d = getSqliteDb();
+  return d.transaction(() => {
+    d.prepare(
+      `DELETE FROM leaderboard_entries
+       WHERE kind = ? AND LOWER(name) = LOWER(?) AND score < ?`
+    ).run(params.kind, params.name, params.score);
+    const existing = d
+      .prepare(
+        `SELECT id FROM leaderboard_entries
+         WHERE kind = ? AND LOWER(name) = LOWER(?) AND score = ?
+         ORDER BY createdAt ASC LIMIT 1`
+      )
+      .get(params.kind, params.name, params.score) as { id: number } | undefined;
+    if (existing) {
+      d.prepare(`UPDATE leaderboard_entries SET name = ? WHERE id = ?`).run(
+        params.name,
+        existing.id
+      );
+      return { id: existing.id, inserted: false };
+    }
+    const info = d
+      .prepare(
+        `INSERT INTO leaderboard_entries (name, score, createdAt, kind) VALUES (?, ?, ?, ?)`
+      )
+      .run(params.name, params.score, params.createdAt, params.kind);
+    return { id: Number(info.lastInsertRowid), inserted: true };
+  })();
 }
 
 function sqliteReplaceLeaderboardScore(params: {

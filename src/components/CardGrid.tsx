@@ -28,7 +28,7 @@ export default function CardGrid({
 }: CardGridProps) {
   const hints = cardShortcutLabels(numpadCardLayout);
   return (
-    <div className="grid grid-cols-3 gap-2.5 px-4 max-w-sm mx-auto w-full">
+    <div className="grid grid-cols-3 gap-1.5 px-4 max-w-sm mx-auto w-full">
       {tiles.map((tile, i) => {
         const isSelected = selectedIndex === i;
         const hotkeyLabel = hints[i] ?? String(i + 1);
