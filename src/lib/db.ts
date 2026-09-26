@@ -270,9 +270,8 @@ export async function findLeaderboardEntriesByName(
 }
 
 /**
- * Delete same-name entries with a strictly lower score, then insert the new score
- * unless an equal score already exists (older equal ranks better on the board).
- * Keeps all entries with score > new score.
+ * Insert the new score and delete same-name entries with a strictly lower score.
+ * Equal and higher scores stay. An older equal still ranks ahead of the new one.
  */
 export async function replaceLowerLeaderboardScores(params: {
   name: string;
@@ -287,19 +286,6 @@ export async function replaceLowerLeaderboardScores(params: {
       DELETE FROM leaderboard_entries
       WHERE kind = ${kind} AND LOWER(name) = LOWER(${name}) AND score < ${score}
     `;
-    const equal = await sql`
-      SELECT id FROM leaderboard_entries
-      WHERE kind = ${kind} AND LOWER(name) = LOWER(${name}) AND score = ${score}
-      ORDER BY "createdAt" ASC
-      LIMIT 1
-    `;
-    const existingId = (equal as { id: number }[])[0]?.id;
-    if (existingId != null) {
-      await sql`
-        UPDATE leaderboard_entries SET name = ${name} WHERE id = ${existingId}
-      `;
-      return { id: existingId, inserted: false };
-    }
     const rows = await sql`
       INSERT INTO leaderboard_entries (name, score, "createdAt", kind)
       VALUES (${name}, ${score}, ${createdAt}, ${kind})
@@ -689,20 +675,6 @@ function sqliteReplaceLowerLeaderboardScores(params: {
       `DELETE FROM leaderboard_entries
        WHERE kind = ? AND LOWER(name) = LOWER(?) AND score < ?`
     ).run(params.kind, params.name, params.score);
-    const existing = d
-      .prepare(
-        `SELECT id FROM leaderboard_entries
-         WHERE kind = ? AND LOWER(name) = LOWER(?) AND score = ?
-         ORDER BY createdAt ASC LIMIT 1`
-      )
-      .get(params.kind, params.name, params.score) as { id: number } | undefined;
-    if (existing) {
-      d.prepare(`UPDATE leaderboard_entries SET name = ? WHERE id = ?`).run(
-        params.name,
-        existing.id
-      );
-      return { id: existing.id, inserted: false };
-    }
     const info = d
       .prepare(
         `INSERT INTO leaderboard_entries (name, score, createdAt, kind) VALUES (?, ?, ?, ?)`

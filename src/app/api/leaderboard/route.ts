@@ -57,16 +57,11 @@ export async function POST(req: Request) {
   const existing = await findLeaderboardEntriesByName(name, kind);
   const best = existing[0] ?? null;
   const lowerCount = existing.filter((e) => e.score < score).length;
-  const canAdd = !existing.some((e) => e.score === score);
+  const hasEqual = existing.some((e) => e.score === score);
 
   if (best && !replace && !confirmAdd) {
-    // Already have this exact score (older ranks better) and nothing lower to clear.
-    if (!canAdd && lowerCount === 0) {
-      await markSprintSubmitted(sessionId);
-      return NextResponse.json({ ok: true, id: best.id, score, alreadyHad: true });
-    }
-
-    // Have lower scores that could be replaced — ask before changing anything.
+    // Lower scores can be dropped. The new score can always be added alongside
+    // what stays, including an older equal score (that one ranks higher).
     if (lowerCount > 0) {
       return NextResponse.json(
         {
@@ -75,24 +70,23 @@ export async function POST(req: Request) {
           existingScore: best.score,
           score,
           lowerCount,
-          canAdd,
+          canAdd: true,
+          hasEqual,
         },
         { status: 409 }
       );
     }
 
-    // Only higher scores exist — offer to add this one alongside them.
-    if (canAdd) {
-      return NextResponse.json(
-        {
-          error: "name exists",
-          conflict: "add",
-          existingScore: best.score,
-          score,
-        },
-        { status: 409 }
-      );
-    }
+    return NextResponse.json(
+      {
+        error: "name exists",
+        conflict: "add",
+        existingScore: best.score,
+        score,
+        hasEqual,
+      },
+      { status: 409 }
+    );
   }
 
   if (replace) {
@@ -116,9 +110,6 @@ export async function POST(req: Request) {
   }
 
   if (confirmAdd || !best) {
-    if (best && !canAdd) {
-      return NextResponse.json({ error: "score already on board" }, { status: 409 });
-    }
     const id = await insertLeaderboardEntry(name, score, Date.now(), kind);
     await markSprintSubmitted(sessionId);
     return NextResponse.json({ ok: true, id, score });

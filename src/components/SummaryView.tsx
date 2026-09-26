@@ -28,8 +28,9 @@ type NameConflict =
       score: number;
       lowerCount: number;
       canAdd: boolean;
+      hasEqual: boolean;
     }
-  | { kind: "add"; existingScore: number; score: number };
+  | { kind: "add"; existingScore: number; score: number; hasEqual: boolean };
 
 export default function SummaryView({
   mode,
@@ -105,6 +106,7 @@ export default function SummaryView({
           existingScore?: number;
           lowerCount?: number;
           canAdd?: boolean;
+          hasEqual?: boolean;
         };
         if (
           res.status === 409 &&
@@ -116,7 +118,8 @@ export default function SummaryView({
             existingScore: data.existingScore,
             score: typeof data.score === "number" ? data.score : userScore,
             lowerCount: typeof data.lowerCount === "number" ? data.lowerCount : 1,
-            canAdd: data.conflict === "replaceable" ? true : data.canAdd !== false,
+            canAdd: true,
+            hasEqual: data.hasEqual === true,
           });
           return;
         }
@@ -129,6 +132,7 @@ export default function SummaryView({
             kind: "add",
             existingScore: data.existingScore,
             score: typeof data.score === "number" ? data.score : userScore,
+            hasEqual: data.hasEqual === true,
           });
           return;
         }
@@ -224,33 +228,37 @@ export default function SummaryView({
           <ConfirmSheet
             title="Name already on the board"
             body={
-              nameConflict.canAdd
+              nameConflict.hasEqual
                 ? nameConflict.lowerCount > 1
-                  ? `“${leaderName.trim()}” already has ${nameConflict.lowerCount} lower scores (best: ${nameConflict.existingScore}). Replace those lower scores, or keep them and add your new score of ${nameConflict.score}?`
-                  : `“${leaderName.trim()}” already has a lower score of ${nameConflict.existingScore}. Replace it, or keep it and add your new score of ${nameConflict.score}?`
+                  ? `“${leaderName.trim()}” already has ${nameConflict.score}. That one ranks higher than this one because it was earlier. Add yours and keep the lower scores, or add yours and drop those ${nameConflict.lowerCount} lower scores?`
+                  : `“${leaderName.trim()}” already has ${nameConflict.score}. That one ranks higher than this one because it was earlier. Add yours and keep the lower score, or add yours and drop it?`
                 : nameConflict.lowerCount > 1
-                  ? `“${leaderName.trim()}” already has ${nameConflict.score} (older entries rank higher when tied). Replace your ${nameConflict.lowerCount} lower scores, or leave the board as-is?`
-                  : `“${leaderName.trim()}” already has ${nameConflict.score} (older entries rank higher when tied). Replace your lower score, or leave the board as-is?`
+                  ? `Add ${nameConflict.score} for “${leaderName.trim()}”. You can keep your other scores, or drop the ${nameConflict.lowerCount} scores below ${nameConflict.score}.`
+                  : `Add ${nameConflict.score} for “${leaderName.trim()}”. You can keep the lower score, or drop it.`
             }
             confirmLabel={
-              nameConflict.lowerCount > 1 ? "Replace lower scores" : "Replace lower score"
+              nameConflict.lowerCount > 1
+                ? "Add and drop lower scores"
+                : "Add and drop lower score"
             }
-            secondaryLabel={nameConflict.canAdd ? "Keep all & add" : undefined}
+            secondaryLabel="Add, keep existing"
             showConfirmShortcut={false}
             cancelLabel="Cancel"
             onConfirm={() => void submitScore({ replace: true })}
-            onSecondary={
-              nameConflict.canAdd
-                ? () => void submitScore({ confirmAdd: true })
-                : undefined
-            }
+            onSecondary={() => void submitScore({ confirmAdd: true })}
             onCancel={() => setNameConflict(null)}
           />
         )}
         {nameConflict?.kind === "add" && (
           <ConfirmSheet
             title="Add this score?"
-            body={`“${leaderName.trim()}” already has ${nameConflict.existingScore} on the board. Your score is ${nameConflict.score}. Add it as a separate entry? Your existing score won’t be changed.`}
+            body={
+              nameConflict.hasEqual && nameConflict.existingScore === nameConflict.score
+                ? `“${leaderName.trim()}” already has ${nameConflict.existingScore}. That ${nameConflict.existingScore} ranks higher than yours because it was earlier. Add yours as a separate entry?`
+                : nameConflict.hasEqual
+                  ? `“${leaderName.trim()}” already has ${nameConflict.existingScore}, and a ${nameConflict.score} that ranks higher than yours because it was earlier. Add yours as a separate entry? Existing scores stay.`
+                  : `“${leaderName.trim()}” already has ${nameConflict.existingScore} on the board. Your score is ${nameConflict.score}. Add it as a separate entry? Your existing score won’t be changed.`
+            }
             confirmLabel="Add entry"
             showConfirmShortcut={false}
             cancelLabel="Cancel"
